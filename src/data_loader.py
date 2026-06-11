@@ -1,4 +1,45 @@
-"""Load and validate café sales data."""
+"""Load and validate café sales data.
+
+TODO: CSV Upload Feature (future enhancement)
+============================================
+If adding user CSV uploads via Dash, implement these safeguards:
+
+1. FILE SIZE LIMIT:
+   max_size = 10 * 1024 * 1024  # 10 MB
+   if len(file_contents) > max_size:
+       raise ValueError(f"File too large. Max {max_size / 1024 / 1024:.0f} MB")
+
+2. EXTENSION VALIDATION:
+   allowed_extensions = {'.csv'}
+   if not filename.lower().endswith(tuple(allowed_extensions)):
+       raise ValueError("Only .csv files are allowed")
+
+3. COLUMN VALIDATION (already implemented in load_sales_data):
+   - Validate required columns exist
+   - Validate data types match expected (date, int, float, etc.)
+   - Validate data ranges (hour 0-23, revenue > 0)
+
+4. NEVER EXECUTE FILE CONTENTS:
+   ✗ Bad:   eval(df.values)  or exec(file_contents)
+   ✓ Safe:  Only parse CSV as data, never as code
+
+5. CONSIDER SCANNING:
+   - For CSV injection (formulas starting with =, +, @, -)
+   - Check cell values don't start with '=' (Excel formula injection)
+   - Sanitize any cells that look like code
+
+6. RATE LIMITING:
+   - Limit uploads per user per minute (prevent DoS)
+   - Store upload audit trail (who, when, file hash)
+
+7. ISOLATION:
+   - Process uploads in a temporary directory
+   - Delete after validation/loading
+   - Never store raw uploads with sensitive data
+
+The current app uses static data (generated_sample_data.py) so none
+of this is needed yet. Add these when CSV upload is implemented.
+"""
 
 import pandas as pd
 from pathlib import Path
