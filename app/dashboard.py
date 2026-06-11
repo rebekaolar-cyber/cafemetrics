@@ -38,8 +38,34 @@ BG_LIGHT = "#f5f5f5"
 WHITE = "#ffffff"
 GRAY_TEXT = "#666"
 
-# Initialize database
+# Initialize database and manage insights
 init_db()
+
+# Save each insight to the database and check for existing status
+insight_db_cache = {}
+if insights:
+    for insight in insights:
+        # Check if this insight already exists in the database
+        existing = get_insights()
+        existing_insight = next(
+            (i for i in existing if i.get("pattern_type") == insight.pattern_type),
+            None,
+        )
+
+        if existing_insight:
+            # Use existing record ID and restore its status
+            insight_db_cache[insight.pattern_type] = existing_insight["id"]
+            insight.status = existing_insight["status"]
+        else:
+            # Create new record with pending status
+            db_id = save_insight(
+                title=insight.title,
+                pattern_type=insight.pattern_type,
+                confidence_score=insight.confidence_score,
+                status="pending",
+            )
+            insight_db_cache[insight.pattern_type] = db_id
+            insight.status = "pending"
 
 # Create Dash app
 app = Dash(__name__, title="CaféMetrics")
@@ -53,6 +79,9 @@ app.layout = html.Div(
         "padding": "0 20px",
     },
     children=[
+        # Hidden store for insight metadata (pattern_type -> db_id mapping)
+        dcc.Store(id="insight-store", data=insight_db_cache),
+
         # Header
         html.Div(
             style={"maxWidth": 1200, "margin": "0 auto", "paddingTop": 40},
@@ -185,6 +214,7 @@ app.layout = html.Div(
                             )
                         ] if not insights else [
                             html.Div(
+                                id={"type": "insight-card", "index": insight.pattern_type},
                                 style={
                                     "padding": 16,
                                     "borderLeft": f"4px solid {TEAL}",
@@ -216,6 +246,33 @@ app.layout = html.Div(
                                                         f"{insight.confidence_score}/100",
                                                         style={"fontSize": 12, "color": GRAY_TEXT},
                                                     ),
+                                                    # Status badge
+                                                    (html.Span(
+                                                        "✓ Verified",
+                                                        style={
+                                                            "display": "inline-block",
+                                                            "padding": "4px 8px",
+                                                            "backgroundColor": "#d4edda",
+                                                            "color": "#155724",
+                                                            "borderRadius": 4,
+                                                            "fontSize": 11,
+                                                            "fontWeight": 600,
+                                                            "marginLeft": 8,
+                                                        },
+                                                    ) if insight.status == "verified" else
+                                                    html.Span(
+                                                        "✗ Dismissed",
+                                                        style={
+                                                            "display": "inline-block",
+                                                            "padding": "4px 8px",
+                                                            "backgroundColor": "#f8d7da",
+                                                            "color": "#721c24",
+                                                            "borderRadius": 4,
+                                                            "fontSize": 11,
+                                                            "fontWeight": 600,
+                                                            "marginLeft": 8,
+                                                        },
+                                                    ) if insight.status == "dismissed" else None),
                                                     html.P(insight.text, style={"margin": "12px 0 8px 0", "color": "#333", "fontSize": 14}),
                                                     html.P(
                                                         f"📊 Basis: {insight.basis}",
@@ -227,7 +284,8 @@ app.layout = html.Div(
                                                     ),
                                                 ],
                                             ),
-                                            html.Div(
+                                            # Only show buttons if status is still "pending"
+                                            (html.Div(
                                                 style={"display": "flex", "gap": 8},
                                                 children=[
                                                     html.Button(
@@ -257,7 +315,7 @@ app.layout = html.Div(
                                                         },
                                                     ),
                                                 ],
-                                            ),
+                                            ) if insight.status == "pending" else None),
                                         ],
                                     ),
                                 ],
@@ -450,5 +508,169 @@ def handle_qa(dip_clicks, trend_clicks, anomaly_clicks):
     )
 
 
+@app.callback(
+    Output({"type": "insight-card", "index": "ALL"}, "children"),
+    [
+        Input({"type": "verify-btn", "index": "ALL"}, "n_clicks"),
+        Input({"type": "dismiss-btn", "index": "ALL"}, "n_clicks"),
+    ],
+    prevent_initial_call=True,
+)
+def handle_insight_action(verify_clicks, dismiss_clicks):
+    """
+    Handle Verify/Dismiss button clicks for insights.
+
+    Dash callback explanation:
+    - Input: Listens to clicks on buttons matching pattern {"type": "verify-btn/dismiss-btn"}
+    - Output: Updates ALL insight cards matching {"type": "insight-card"}
+    - ctx.triggered: Tells us which button was clicked and its pattern_type
+    - ALL: Means "all buttons/cards matching this pattern" → fired together
+    """
+    from dash import ctx
+
+    if not ctx.triggered:
+        raise Exception("No button triggered")
+
+    # Get which button was clicked
+    triggered_id = ctx.triggered[0]["prop_id"]
+    button_type = triggered_id.split(".")[0]  # e.g. '{"type": "verify-btn", "index": "afternoon_dip"}'
+
+    # Parse the button ID to extract type (verify/dismiss) and pattern_type (afternoon_dip)
+    import json
+    button_id = json.loads(button_type)
+    action_type = button_id["type"]  # "verify-btn" or "dismiss-btn"
+    pattern_type = button_id["index"]  # e.g. "afternoon_dip"
+
+    # Determine the status to save
+    if "verify" in action_type:
+        new_status = "verified"
+    else:
+        new_status = "dismissed"
+
+    # Find the insight and save to database
+    for insight in insights:
+        if insight.pattern_type == pattern_type:
+            # Get the database ID from the store
+            db_id = insight_db_cache.get(pattern_type)
+            if db_id:
+                update_insight_status(db_id, new_status)
+
+            # Mark it in memory so we don't show buttons anymore
+            insight.status = new_status
+            break
+
+    # Rebuild all insight cards with updated statuses
+    return [
+        html.Div(
+            style={
+                "padding": 16,
+                "borderLeft": f"4px solid {TEAL}",
+                "backgroundColor": "#f9fafb",
+                "borderRadius": 8,
+                "marginBottom": 16,
+            },
+            children=[
+                html.Div(
+                    style={"display": "flex", "justifyContent": "space-between", "alignItems": "start"},
+                    children=[
+                        html.Div(
+                            children=[
+                                html.H4(insight.title, style={"margin": "0 0 4px 0", "color": TEAL, "fontSize": 16}),
+                                html.Span(
+                                    insight.confidence_band,
+                                    style={
+                                        "display": "inline-block",
+                                        "padding": "4px 8px",
+                                        "backgroundColor": {"HIGH": "#d4edda", "MEDIUM": "#fff3cd", "LOW": "#f8d7da"}.get(insight.confidence_band, "#e2e3e5"),
+                                        "color": {"HIGH": "#155724", "MEDIUM": "#856404", "LOW": "#721c24"}.get(insight.confidence_band, "#383d41"),
+                                        "borderRadius": 4,
+                                        "fontSize": 11,
+                                        "fontWeight": 600,
+                                        "marginRight": 8,
+                                    },
+                                ),
+                                html.Span(
+                                    f"{insight.confidence_score}/100",
+                                    style={"fontSize": 12, "color": GRAY_TEXT},
+                                ),
+                                # Status badge
+                                (html.Span(
+                                    "✓ Verified",
+                                    style={
+                                        "display": "inline-block",
+                                        "padding": "4px 8px",
+                                        "backgroundColor": "#d4edda",
+                                        "color": "#155724",
+                                        "borderRadius": 4,
+                                        "fontSize": 11,
+                                        "fontWeight": 600,
+                                        "marginLeft": 8,
+                                    },
+                                ) if insight.status == "verified" else
+                                html.Span(
+                                    "✗ Dismissed",
+                                    style={
+                                        "display": "inline-block",
+                                        "padding": "4px 8px",
+                                        "backgroundColor": "#f8d7da",
+                                        "color": "#721c24",
+                                        "borderRadius": 4,
+                                        "fontSize": 11,
+                                        "fontWeight": 600,
+                                        "marginLeft": 8,
+                                    },
+                                ) if insight.status == "dismissed" else None),
+
+                                html.P(insight.text, style={"margin": "12px 0 8px 0", "color": "#333", "fontSize": 14}),
+                                html.P(
+                                    f"📊 Basis: {insight.basis}",
+                                    style={"margin": "0 0 8px 0", "color": GRAY_TEXT, "fontSize": 12, "fontStyle": "italic"},
+                                ),
+                                html.P(
+                                    f"✓ Action: {insight.suggested_action}",
+                                    style={"margin": "0", "color": "#333", "fontSize": 13},
+                                ),
+                            ],
+                        ),
+                        # Only show buttons if status is still "pending"
+                        (html.Div(
+                            style={"display": "flex", "gap": 8},
+                            children=[
+                                html.Button(
+                                    "✓ Verify",
+                                    id={"type": "verify-btn", "index": insight.pattern_type},
+                                    style={
+                                        "padding": "6px 12px",
+                                        "fontSize": 12,
+                                        "backgroundColor": "#d4edda",
+                                        "color": "#155724",
+                                        "border": "1px solid #c3e6cb",
+                                        "borderRadius": 4,
+                                        "cursor": "pointer",
+                                    },
+                                ),
+                                html.Button(
+                                    "✗ Dismiss",
+                                    id={"type": "dismiss-btn", "index": insight.pattern_type},
+                                    style={
+                                        "padding": "6px 12px",
+                                        "fontSize": 12,
+                                        "backgroundColor": "#f8d7da",
+                                        "color": "#721c24",
+                                        "border": "1px solid #f5c6cb",
+                                        "borderRadius": 4,
+                                        "cursor": "pointer",
+                                    },
+                                ),
+                            ],
+                        ) if insight.status == "pending" else None),
+                    ],
+                ),
+            ],
+        )
+        for insight in insights
+    ]
+
+
 if __name__ == "__main__":
-    app.run_server(debug=True, port=8050)
+    app.run(debug=True, port=8050)
