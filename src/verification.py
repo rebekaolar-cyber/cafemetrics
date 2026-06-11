@@ -1,4 +1,14 @@
-"""Track insight verification status (pending, verified, dismissed) in SQLite."""
+"""Track insight verification status (pending, verified, dismissed) in SQLite.
+
+SQL SAFETY NOTE:
+All queries in this module use parameterized statements (? placeholders with tuple args).
+This prevents SQL injection by separating query structure from data.
+
+✓ SAFE:   c.execute("SELECT * FROM insights WHERE id = ?", (insight_id,))
+✗ UNSAFE: c.execute(f"SELECT * FROM insights WHERE id = {insight_id}")
+
+Parameterized queries ensure user input is always treated as data, never as code.
+"""
 
 import sqlite3
 from pathlib import Path
