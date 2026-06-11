@@ -1,4 +1,39 @@
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Project-specific
+.claude/
 __pycache__/
-*.pyc
+*.py[cod]
+*$py.class
+*.so
+
+# Virtual environment
+venv/
+env/
+ENV/
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Dependencies
+.egg-info/
+dist/
+build/
+
+# OS
 .DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Environment variables
 .env
+.env.local
