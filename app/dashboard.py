@@ -1,5 +1,6 @@
 """CaféMetrics dashboard: transparent, auditable café sales analytics."""
 
+import os
 import pandas as pd
 import plotly.graph_objects as go
 from dash import Dash, dcc, html, Input, Output, State, callback
@@ -673,4 +674,21 @@ def handle_insight_action(verify_clicks, dismiss_clicks):
 
 
 if __name__ == "__main__":
-    app.run(debug=True, port=8050)
+    # Configuration from environment variables (safe defaults for production)
+    # DEBUG: NEVER True in production. Flask/Dash debug mode exposes an interactive
+    # console (Werkzeug debugger) that can execute arbitrary Python code on the server.
+    # Only enable locally for development. Default is False.
+    debug = os.environ.get("DEBUG", "false").lower() == "true"
+
+    # PORT: Server port. Defaults to 8050 (Dash convention).
+    # Production deployments often run behind a reverse proxy on port 80/443.
+    port = int(os.environ.get("PORT", 8050))
+
+    # HOST: Bind to all interfaces (0.0.0.0) to allow external connections.
+    # Behind a reverse proxy, this is safe. Direct exposure requires firewall.
+    host = os.environ.get("HOST", "127.0.0.1")
+
+    if debug:
+        print("⚠️  WARNING: Debug mode is ENABLED. Never use in production.")
+
+    app.run(debug=debug, host=host, port=port)
