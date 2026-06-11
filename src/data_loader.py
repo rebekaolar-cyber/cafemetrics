@@ -22,15 +22,37 @@ def load_sales_data(csv_path: str) -> pd.DataFrame:
     """
     path = Path(csv_path)
     if not path.exists():
-        raise FileNotFoundError(f"Data file not found: {csv_path}")
+        raise FileNotFoundError(
+            f"❌ Data file not found: {csv_path}\n"
+            f"   Run: python data/generate_sample_data.py"
+        )
 
-    df = pd.read_csv(csv_path, parse_dates=["date"])
+    # Try to read the CSV file, catching parse errors gracefully
+    try:
+        df = pd.read_csv(csv_path, parse_dates=["date"])
+    except pd.errors.ParserError as e:
+        raise ValueError(
+            f"❌ CSV file is malformed (cannot parse): {csv_path}\n"
+            f"   Error: {str(e)[:100]}...\n"
+            f"   Check that the file is valid CSV format"
+        ) from e
+    except Exception as e:
+        raise ValueError(
+            f"❌ Failed to read CSV file: {csv_path}\n"
+            f"   Error: {type(e).__name__}: {str(e)[:100]}"
+        ) from e
 
     required_columns = {"date", "hour", "day_of_week", "category", "product",
                         "quantity", "unit_price", "revenue"}
     if not required_columns.issubset(df.columns):
         missing = required_columns - set(df.columns)
-        raise ValueError(f"Missing required columns: {missing}")
+        found = sorted(df.columns)
+        raise ValueError(
+            f"❌ CSV file is missing required columns: {sorted(missing)}\n"
+            f"   Found columns: {found}\n"
+            f"   Required: {sorted(required_columns)}\n"
+            f"   Check the CSV header and regenerate if needed"
+        )
 
     # Validate data types and ranges
     if not pd.api.types.is_datetime64_any_dtype(df["date"]):

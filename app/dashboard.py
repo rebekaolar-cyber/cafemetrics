@@ -20,14 +20,35 @@ from src.verification import (
     clear_db,
 )
 
-# Load data
+# Load data with clear error reporting
+DATA_LOAD_ERROR = None
 try:
     df = load_sales_data("data/sample_sales.csv")
     metrics = summary_metrics(df)
     insights = generate_all_insights(df)
     hourly = aggregate_by_hour(df)
+except FileNotFoundError as e:
+    DATA_LOAD_ERROR = str(e)
+    print(f"❌ {DATA_LOAD_ERROR}")
+    df = None
+    metrics = {}
+    insights = []
+    hourly = None
+except ValueError as e:
+    DATA_LOAD_ERROR = str(e)
+    print(f"❌ {DATA_LOAD_ERROR}")
+    df = None
+    metrics = {}
+    insights = []
+    hourly = None
 except Exception as e:
-    print(f"Error loading data: {e}")
+    # Unexpected error — log it but don't expose full traceback to user
+    DATA_LOAD_ERROR = (
+        f"Unexpected error loading data. Check logs for details.\n"
+        f"Error type: {type(e).__name__}"
+    )
+    print(f"❌ {DATA_LOAD_ERROR}")
+    print(f"   Full error: {e}")
     df = None
     metrics = {}
     insights = []
@@ -102,6 +123,26 @@ app.layout = html.Div(
                 ),
             ],
         ),
+
+        # Error banner (shown if data loading failed)
+        (html.Div(
+            style={
+                "maxWidth": 1200,
+                "margin": "0 auto 20px auto",
+                "padding": 16,
+                "backgroundColor": "#f8d7da",
+                "color": "#721c24",
+                "borderRadius": 8,
+                "border": "1px solid #f5c6cb",
+                "whiteSpace": "pre-wrap",
+                "fontFamily": "monospace",
+                "fontSize": 13,
+            },
+            children=[
+                html.H4("❌ Data Loading Failed", style={"margin": "0 0 12px 0"}),
+                html.P(DATA_LOAD_ERROR, style={"margin": 0}),
+            ],
+        ) if DATA_LOAD_ERROR else None),
 
         # Main content container
         html.Div(
