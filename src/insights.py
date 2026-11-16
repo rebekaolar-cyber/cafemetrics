@@ -1,7 +1,8 @@
 """Generate templated insights from analysis and confidence scores."""
 
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Optional
 from src.analysis import analyze_all
+from src.answers import hour_range
 from src.confidence import compute_confidence, score_to_band, confidence_basis
 
 
@@ -16,6 +17,7 @@ class Insight:
         basis: str,
         suggested_action: str,
         pattern_type: str,
+        evidence: Optional[Dict[str, float]] = None,
     ):
         """
         Args:
@@ -25,6 +27,9 @@ class Insight:
             basis: Explanation of the confidence (e.g., "6 weeks of data...").
             suggested_action: What the café should consider doing.
             pattern_type: Type of pattern (e.g., "afternoon_dip", "trend", "anomaly").
+            evidence: The four inputs the score was computed from (sample_size,
+                consistency_ratio, effect_size, p_value), so the score can be itemised
+                with confidence_breakdown(**evidence). None if not recorded.
         """
         self.title = title
         self.text = text
@@ -33,6 +38,7 @@ class Insight:
         self.basis = basis
         self.suggested_action = suggested_action
         self.pattern_type = pattern_type
+        self.evidence = evidence
         self.status = "pending"  # pending, verified, dismissed
 
     def to_dict(self) -> Dict[str, Any]:
@@ -74,28 +80,30 @@ def generate_afternoon_dip_insight(
         dip["overall_avg_revenue"] * 100
     )
 
-    score = compute_confidence(
-        sample_size=dip["sample_size"],
-        consistency_ratio=dip["sample_size"] / calendar_days,
-        effect_size=dip["effect_size"],
-        p_value=dip["p_value"],
-    )
+    evidence = {
+        "sample_size": dip["sample_size"],
+        "consistency_ratio": dip["sample_size"] / calendar_days,
+        "effect_size": dip["effect_size"],
+        "p_value": dip["p_value"],
+    }
+    score = compute_confidence(**evidence)
 
     band = score_to_band(score)
     basis = confidence_basis(dip["sample_size"], dip["sample_size"] / calendar_days, calendar_days)
+    window = hour_range(dip["dip_hours"])  # the clock time the checked hours cover
 
     if band == "HIGH":
         text = (
-            f"Strong afternoon dip detected (14:00–16:00). Sales are ~{pct_lower}% lower "
+            f"Strong afternoon dip detected ({window}). Sales are ~{pct_lower}% lower "
             f"during these hours vs. the daily average. This pattern is consistent and statistically significant."
         )
         action = (
-            "Consider reducing staff during 14:00–16:00, or running a targeted promotion "
+            f"Consider reducing staff during {window}, or running a targeted promotion "
             "(e.g., afternoon specials) to boost sales."
         )
     elif band == "MEDIUM":
         text = (
-            f"Afternoon dip detected (14:00–16:00). Sales drop ~{pct_lower}% below daily average. "
+            f"Afternoon dip detected ({window}). Sales drop ~{pct_lower}% below daily average. "
             f"Pattern is present but less pronounced."
         )
         action = (
@@ -104,7 +112,7 @@ def generate_afternoon_dip_insight(
         )
     else:  # LOW
         text = (
-            f"Possible afternoon dip (14:00–16:00) observed (~{pct_lower}% below average), "
+            f"Possible afternoon dip ({window}) observed (~{pct_lower}% below average), "
             "but the pattern is weak or inconsistent."
         )
         action = "Collect more data before taking action."
@@ -116,6 +124,7 @@ def generate_afternoon_dip_insight(
         basis=basis,
         suggested_action=action,
         pattern_type="afternoon_dip",
+        evidence=evidence,
     )
 
 
@@ -140,12 +149,13 @@ def generate_trend_insight(
 
     direction = trend["trend_direction"]
 
-    score = compute_confidence(
-        sample_size=trend["sample_size"],
-        consistency_ratio=1.0,  # Trend is continuous if detected
-        effect_size=abs(trend["slope_pct"]) / 10,  # Scale percentage to effect-like metric
-        p_value=trend["p_value"],
-    )
+    evidence = {
+        "sample_size": trend["sample_size"],
+        "consistency_ratio": 1.0,  # Trend is continuous if detected
+        "effect_size": abs(trend["slope_pct"]) / 10,  # Scale percentage to effect-like metric
+        "p_value": trend["p_value"],
+    }
+    score = compute_confidence(**evidence)
 
     basis = confidence_basis(trend["sample_size"], 1.0, calendar_days)
 
@@ -169,6 +179,7 @@ def generate_trend_insight(
         basis=basis,
         suggested_action=action,
         pattern_type="trend",
+        evidence=evidence,
     )
 
 
@@ -191,12 +202,13 @@ def generate_anomaly_insights(
     if not anomalies["detected"] or anomalies["anomaly_count"] == 0:
         return []
 
-    score = compute_confidence(
-        sample_size=calendar_days,
-        consistency_ratio=anomalies["anomaly_count"] / calendar_days,
-        effect_size=anomalies["mean_z_score"] * 0.3,
-        p_value=0.001 if anomalies["anomaly_count"] > 0 else 1.0,
-    )
+    evidence = {
+        "sample_size": calendar_days,
+        "consistency_ratio": anomalies["anomaly_count"] / calendar_days,
+        "effect_size": anomalies["mean_z_score"] * 0.3,
+        "p_value": 0.001 if anomalies["anomaly_count"] > 0 else 1.0,
+    }
+    score = compute_confidence(**evidence)
 
     basis = confidence_basis(
         calendar_days,
@@ -223,6 +235,7 @@ def generate_anomaly_insights(
         basis=basis,
         suggested_action=action,
         pattern_type="anomalies",
+        evidence=evidence,
     )]
 
 

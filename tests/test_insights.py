@@ -320,3 +320,16 @@ class TestGenerateAllInsights:
         # Should have at least 1 insight (dip or trend)
         assert len(insights) >= 1
         assert all(isinstance(i, Insight) for i in insights)
+
+
+def test_generated_insights_record_the_evidence_behind_their_score():
+    """Every generated insight keeps the four inputs, and they reproduce its score."""
+    from src.confidence import compute_confidence
+    from src.data_loader import load_sales_data
+    from src.insights import generate_all_insights
+
+    insights = generate_all_insights(load_sales_data("data/sample_sales.csv"))
+    assert insights
+    for insight in insights:
+        assert set(insight.evidence) == {"sample_size", "consistency_ratio", "effect_size", "p_value"}
+        assert compute_confidence(**insight.evidence) == insight.confidence_score

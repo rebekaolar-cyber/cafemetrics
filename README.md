@@ -2,6 +2,8 @@
 
 A portfolio-quality analytics dashboard for café sales data that uses **rule-based statistical analysis** (no LLM) and **transparent confidence scoring** to generate auditable, actionable insights.
 
+![CaféMetrics dashboard](docs/screenshot.png)
+
 ## Problem
 
 Café managers need to understand sales patterns and make decisions based on evidence, not guesses. Off-the-shelf dashboards show *what happened*, but don't explain *why* or *how confident* the insights are.
@@ -31,10 +33,12 @@ cafemetrics/
     analysis.py                       # Pattern detection (dips, trends, anomalies)
     confidence.py                     # Confidence scoring formula (centerpiece)
     insights.py                       # Template-based insight generation
+    answers.py                        # The three fixed questions, answered from the analysis
     verification.py                   # SQLite for audit trail
   
   app/
-    dashboard.py                      # Dash UI with fixed Q&A buttons
+    dashboard.py                      # Dash UI: structure and callbacks
+    assets/                           # style.css, the Recursive font, favicon
   
   tests/                              # pytest suites for all modules
     test_*.py
@@ -62,6 +66,11 @@ score = 0.25×size_score + 0.35×consistency_score + 0.25×effect_score + 0.15×
 
 Every score includes a **basis** line: "6 weeks of data, consistent across 28/30 weekdays."
 
+The dashboard prints each score **itemised, like a till receipt**: the points earned by each of
+the four parts (`confidence_breakdown()`), so you can see at a glance why a finding is only
+"medium". In the sample data the afternoon dip scores 79: full marks for sample size,
+consistency and significance, but 3.5 of 25 for effect size, because the dip is small.
+
 ### 2. Three Core Analyses
 
 - **Afternoon Dip**: Compares revenue in hours 14–16 to daily mean. Returns effect size, sample size, p-value → confidence.
@@ -74,7 +83,7 @@ Insights use templates selected by confidence band:
 
 ```python
 if band == "HIGH":
-    text = "Strong afternoon dip detected (14:00–16:00). Sales are ~8% lower..."
+    text = "Strong afternoon dip detected (14:00 to 17:00). Sales are ~8% lower..."
     action = "Consider reducing staff or running a targeted promotion."
 elif band == "MEDIUM":
     text = "Afternoon dip detected. Pattern is present but less pronounced."
@@ -97,17 +106,21 @@ All stored in SQLite (`insights.db`).
 
 ### 5. Fixed Q&A, Not Free-Form LLM
 
-The dashboard includes three preset questions with rule-based answers:
-- "Why the afternoon dip?" → Explains the statistical finding + suggests action
-- "What's the trend?" → Explains slope + direction + suggests action
-- "Any anomalies?" → Lists anomalous dates + suggests investigation
+The dashboard includes three preset questions. Each answer is a template filled in from the
+analysis of the loaded data (`src/answers.py`), so it can only say what the data shows:
+- "Is there an afternoon dip?" → the two averages, the gap, the test and effect size
+- "Is revenue rising or falling?" → the slope, its p-value and R², or "no clear trend"
+- "Did any day stand out?" → the outlier dates, or "no day stands out", with the rule used
+
+When the rules find nothing, the answer says so and shows the numbers. On the sample data two of
+the three answers are "nothing found".
 
 No free-form text box, no LLM API calls.
 
 ## Installation & Setup
 
 ### Prerequisites
-- Python 3.8+
+- Python 3.11 (the pinned numpy does not install on Python 3.12 or newer)
 - pip
 
 ### Install
@@ -147,14 +160,16 @@ pytest -v
 ```
 
 Coverage includes:
-- **test_data_loader.py** (10 tests): validation, aggregation, spans
-- **test_metrics.py** (16 tests): KPIs, edge cases (empty data, ties)
-- **test_analysis.py** (13 tests): pattern detection, statistical rigor
-- **test_confidence.py** (25 tests): scoring formula, weight interactions, edge cases
-- **test_insights.py** (16 tests): templating, confidence bands, actions
-- **test_verification.py** (8 tests): audit trail, status updates
+- **test_data_loader.py**: validation, aggregation, spans
+- **test_metrics.py**: KPIs, edge cases (empty data, ties)
+- **test_analysis.py**: pattern detection, statistical rigor
+- **test_confidence.py**: scoring formula, weight interactions, edge cases, the itemised breakdown
+- **test_insights.py**: templating, confidence bands, actions, recorded evidence
+- **test_answers.py**: the three fixed questions, including every "nothing found" case
+- **test_verification.py**: audit trail, status updates
+- **test_dashboard.py**: the page builds from the sample data; receipts, stamps, chart marking
 
-**Total: 88 tests, all passing.**
+**Total: 111 tests, all passing.**
 
 ## Project Structure & Design Decisions
 
@@ -244,12 +259,6 @@ update_insight_status(insight_id, "verified", notes="Confirmed during staff revi
 insights = get_insights(status="verified")
 ```
 
-## Screenshot
-
-![CaféMetrics dashboard](docs/screenshot.png)
-
-*To be added: Screenshot of the running dashboard showing KPI cards, hourly chart, insights panel, and Q&A buttons.*
-
 ## Example Output
 
 Running `python data/generate_sample_data.py && python app/dashboard.py` generates:
@@ -258,7 +267,7 @@ Running `python data/generate_sample_data.py && python app/dashboard.py` generat
 ✓ Afternoon Dip
   Confidence: 79/100 (MEDIUM)
   Basis: 13.1 weeks of data (92 calendar days), consistent across 92/92 trading days
-  Text: Afternoon dip detected (14:00–16:00). Sales drop ~8% below daily average...
+  Text: Afternoon dip detected (14:00 to 17:00). Sales drop ~8% below daily average...
   Action: Monitor this pattern closely. A small promotion might help...
 
 ✓ No significant trend detected
@@ -280,7 +289,7 @@ For now, the fixed buttons are intentional: they prove the core analysis works a
 - **Type hints** on all public functions
 - **Docstrings** on all modules and public functions
 - **No comments in code** (docstrings handle the why; names handle the what)
-- **88 tests** covering happy paths, edge cases, and error conditions
+- **111 tests** covering happy paths, edge cases, and error conditions
 - **Clean git history** with one-commit-per-module, clear messages
 
 ## Deployment
@@ -308,3 +317,5 @@ This is a portfolio project built to demonstrate:
 ---
 
 **CaféMetrics**: Rule-based. Transparent. Auditable. No LLM calls.
+
+Font: Recursive, under the SIL Open Font License 1.1 (licence text in `app/assets/fonts/`).
