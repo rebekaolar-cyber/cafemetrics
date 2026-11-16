@@ -5,7 +5,60 @@ consistency, effect size, and statistical significance into a 0–100 confidence
 Every score is auditable and explainable—no black-box models.
 """
 
-from typing import Tuple
+from typing import Dict, List, Tuple
+
+# The four parts of the score and how many of the 100 points each can give.
+WEIGHTS: Dict[str, float] = {
+    "Sample size": 0.25,
+    "Consistency": 0.35,
+    "Effect size": 0.25,
+    "Significance": 0.15,
+}
+
+
+def confidence_breakdown(
+    sample_size: int,
+    consistency_ratio: float,
+    effect_size: float,
+    p_value: float,
+) -> List[Dict[str, float]]:
+    """
+    The confidence score, itemised: how many points each part contributed.
+
+    Uses exactly the formula documented in compute_confidence(), which sums these parts.
+
+    Returns:
+        One dict per part, in the order of WEIGHTS, with keys:
+        - name: "Sample size", "Consistency", "Effect size" or "Significance"
+        - points: points earned (weight × component score), not rounded
+        - max_points: the most this part can give (25, 35, 25, 15)
+
+    Raises:
+        ValueError: If inputs are out of expected ranges.
+    """
+    if sample_size < 1:
+        raise ValueError("sample_size must be ≥1")
+    if not (0 <= consistency_ratio <= 1):
+        raise ValueError("consistency_ratio must be in [0, 1]")
+    if effect_size < 0:
+        raise ValueError("effect_size must be ≥0")
+    if not (0 <= p_value <= 1):
+        raise ValueError("p_value must be in [0, 1]")
+
+    # 30 days of data = full marks
+    size_score = min(100, (sample_size / 30) * 100)
+    # How often the pattern was observed (0–100%)
+    consistency_score = consistency_ratio * 100
+    # Cohen's d scale, capped at 1.25 for a full 100 points
+    effect_score = min(100, effect_size * 80)
+    # Only awarded if p < 0.05 (conventional threshold)
+    p_value_score = 0 if p_value >= 0.05 else (1 - p_value) * 100
+
+    scores = [size_score, consistency_score, effect_score, p_value_score]
+    return [
+        {"name": name, "points": weight * score, "max_points": weight * 100}
+        for (name, weight), score in zip(WEIGHTS.items(), scores)
+    ]
 
 
 def compute_confidence(
@@ -63,49 +116,8 @@ def compute_confidence(
     Raises:
         ValueError: If inputs are out of expected ranges.
     """
-    if sample_size < 1:
-        raise ValueError("sample_size must be ≥1")
-    if not (0 <= consistency_ratio <= 1):
-        raise ValueError("consistency_ratio must be in [0, 1]")
-    if effect_size < 0:
-        raise ValueError("effect_size must be ≥0")
-    if not (0 <= p_value <= 1):
-        raise ValueError("p_value must be in [0, 1]")
-
-    # Component 1: Sample Size
-    # 30 days of data = full marks; scale sub-linearly before that
-    size_score = min(100, (sample_size / 30) * 100)
-
-    # Component 2: Consistency
-    # How often was the pattern observed (0–100%)
-    consistency_score = consistency_ratio * 100
-
-    # Component 3: Effect Size
-    # Cohen's d scale: 0.2 (small), 0.5 (medium), 0.8 (large)
-    # Cap at 1.25 for a full 100 points (e.g., >1.25 is "very large")
-    effect_score = min(100, effect_size * 80)
-
-    # Component 4: P-value (Statistical Significance)
-    # Only award points if p < 0.05 (conventional threshold)
-    if p_value >= 0.05:
-        p_value_score = 0
-    else:
-        p_value_score = (1 - p_value) * 100
-
-    # Weighted combination
-    sample_weight = 0.25
-    consistency_weight = 0.35
-    effect_weight = 0.25
-    pvalue_weight = 0.15
-
-    score = (
-        sample_weight * size_score +
-        consistency_weight * consistency_score +
-        effect_weight * effect_score +
-        pvalue_weight * p_value_score
-    )
-
-    return int(round(score))
+    parts = confidence_breakdown(sample_size, consistency_ratio, effect_size, p_value)
+    return int(round(sum(part["points"] for part in parts)))
 
 
 def score_to_band(score: int) -> str:

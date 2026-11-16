@@ -1,0 +1,157 @@
+/* CaféMetrics: how the dashboard looks.
+
+   The page is the counter (teal); everything the analysis says is printed on paper.
+   Findings are tickets, and each one carries an itemised receipt for its confidence score.
+   One typeface, Recursive, in three voices: casual for headings, plain for text, and
+   monospaced for the figures on the receipts. */
+
+@font-face {
+  font-family: "Recursive";
+  src: url("fonts/Recursive-casl-latin.woff2") format("woff2");
+  font-weight: 300 1000;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Recursive Mono";
+  src: url("fonts/Recursive-mono-latin.woff2") format("woff2");
+  font-weight: 300 1000;
+  font-display: swap;
+}
+
+:root {
+  --counter: #0a5c61;
+  --counter-deep: #084a4e;
+  --on-counter: #fffdf7;
+  --on-counter-soft: #bfe0dd;
+  --paper: #fffdf7;
+  --ink: #14302f;
+  --ink-2: #45605e;
+  --muted: #5f7876;
+  --rule: #c5d1ce;
+  --bar: #0a6c71;
+  --hot: #e96a24;
+  --ok: #0a7a5a;
+  --no: #c8372d;
+  --teeth: 7px;
+}
+
+* { box-sizing: border-box; }
+html { background: var(--counter); }
+body {
+  margin: 0;
+  background: var(--counter);
+  color: var(--ink);
+  font-family: "Recursive", system-ui, sans-serif;
+  font-variation-settings: "CASL" 0.3;
+  font-size: 16px;
+  line-height: 1.5;
+}
+.page { max-width: 74rem; margin: 0 auto; padding: 0 1.5rem 3rem; }
+h1, h2, h3 { font-variation-settings: "CASL" 1; margin: 0; }
+p { margin: 0; }
+.figures, .receipt, .score { font-family: "Recursive Mono", ui-monospace, monospace; font-variation-settings: "MONO" 1; }
+
+/* ---- masthead, printed straight on the counter */
+.mast { color: var(--on-counter); padding: 1.6rem 0 2.2rem; }
+.mast-top { display: flex; justify-content: space-between; gap: 1rem; flex-wrap: wrap; font-size: 0.95rem; color: var(--on-counter-soft); }
+.mast-top b { color: var(--on-counter); font-weight: 800; font-variation-settings: "CASL" 1; font-size: 1.05rem; }
+.mast h1 { font-weight: 900; font-size: clamp(2.6rem, 7vw, 5.6rem); line-height: 0.98; letter-spacing: -0.02em; margin: 2.4rem 0 1rem; }
+.mast .lede { font-size: 1.15rem; max-width: 40em; color: var(--on-counter-soft); }
+.error { background: #fde3df; color: #7a1c14; padding: 1rem 1.2rem; margin-bottom: 1.5rem; white-space: pre-wrap; border-left: 6px solid var(--no); }
+.error h2 { font-size: 1.1rem; margin-bottom: 0.4rem; }
+
+/* ---- paper: anything printed gets a torn bottom edge */
+.paper {
+  background: var(--paper);
+  padding: 1.4rem 1.6rem calc(1.5rem + var(--teeth));
+  -webkit-mask: conic-gradient(from -45deg at bottom, #0000, #000 1deg 89deg, #0000 90deg) 50% / calc(2 * var(--teeth)) 100%;
+  mask: conic-gradient(from -45deg at bottom, #0000, #000 1deg 89deg, #0000 90deg) 50% / calc(2 * var(--teeth)) 100%;
+}
+.section-title { color: var(--on-counter); font-weight: 800; font-size: 1.7rem; line-height: 1.15; margin: 2.6rem 0 0.9rem; }
+.section-note { color: var(--on-counter-soft); margin: -0.5rem 0 1rem; max-width: 44em; }
+
+/* ---- the till strip: four totals */
+.strip { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); padding-left: 0; padding-right: 0; }
+.figure { padding: 0.2rem 1.6rem; border-left: 2px dashed var(--rule); min-width: 0; }
+.figure:first-child { border-left: 0; }
+.figure b { display: block; font-weight: 800; font-size: clamp(1.7rem, 3.2vw, 2.5rem); line-height: 1.1; letter-spacing: -0.03em; color: var(--ink); }
+.figure span { display: block; font-family: "Recursive", system-ui, sans-serif; font-variation-settings: "CASL" 0; color: var(--ink-2); font-size: 0.95rem; margin-top: 0.2rem; }
+
+/* ---- the chart ticket */
+.key { display: flex; flex-wrap: wrap; gap: 0.3rem 1.4rem; color: var(--ink-2); font-size: 0.92rem; margin: 0.2rem 0 0.4rem; }
+.key span { display: inline-flex; align-items: center; gap: 0.45rem; }
+.key i { width: 0.8rem; height: 0.8rem; background: var(--bar); border-radius: 2px 2px 0 0; flex: none; }
+.key i.hot { background: var(--hot); }
+
+/* ---- findings: one ticket each, with the score itemised like a receipt */
+.tickets { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 24rem), 1fr)); gap: 1.25rem; align-items: start; }
+.ticket { position: relative; }
+.ticket-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem; }
+.ticket h3 { font-size: 1.45rem; font-weight: 800; line-height: 1.15; color: var(--ink); }
+.band { color: var(--ink-2); font-size: 0.95rem; margin-top: 0.15rem; }
+.score { text-align: right; white-space: nowrap; color: var(--ink-2); font-size: 0.95rem; line-height: 1; }
+.score b { font-size: 3rem; font-weight: 800; letter-spacing: -0.04em; color: var(--ink); }
+.finding { margin: 0.9rem 0 0; font-size: 1.05rem; color: var(--ink); }
+.receipt { margin: 1.1rem 0 0; padding: 0.9rem 0 0.8rem; border-top: 2px dashed var(--rule); border-bottom: 2px dashed var(--rule); font-size: 0.95rem; }
+.receipt .row { display: grid; grid-template-columns: minmax(0, 1fr) max-content; gap: 0.1rem 1rem; align-items: baseline; padding: 0.22rem 0; }
+.receipt .name { display: flex; align-items: baseline; gap: 0.5rem; color: var(--ink); min-width: 0; }
+.receipt .name::after { content: ""; flex: 1; border-bottom: 2px dotted var(--rule); transform: translateY(-0.25em); min-width: 1rem; }
+.receipt .points { color: var(--ink); white-space: nowrap; }
+.receipt .meter { grid-column: 1 / -1; height: 0.35rem; background: #e3eae8; }
+.receipt .meter i { display: block; height: 100%; background: var(--bar); }
+.receipt .total { font-weight: 800; margin-top: 0.45rem; padding-top: 0.55rem; border-top: 2px solid var(--ink); }
+.basis { color: var(--muted); font-size: 0.9rem; margin-top: 0.7rem; }
+.action { margin-top: 0.8rem; color: var(--ink); }
+.action b { display: block; font-variation-settings: "CASL" 1; font-weight: 800; }
+.ticket-foot { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; margin-top: 1.1rem; min-height: 2.6rem; }
+.ticket-foot .ask { color: var(--ink-2); font-size: 0.92rem; flex-basis: 100%; }
+
+button { font: inherit; cursor: pointer; }
+.btn { padding: 0.5rem 1rem; border: 2px solid var(--ink); background: transparent; color: var(--ink); font-weight: 700; border-radius: 999px; }
+.btn:hover { background: var(--ink); color: var(--paper); }
+.btn.primary { background: var(--ink); color: var(--paper); }
+.btn.primary:hover { background: var(--counter); border-color: var(--counter); }
+button:focus-visible, a:focus-visible { outline: 3px solid var(--hot); outline-offset: 3px; }
+
+/* the rubber stamp left by Verify or Dismiss */
+.stamp {
+  display: inline-block; padding: 0.25rem 0.8rem; border: 3px solid currentColor; border-radius: 0.4rem;
+  font-variation-settings: "CASL" 1; font-weight: 900; font-size: 1.15rem; letter-spacing: 0.06em; text-transform: uppercase;
+  transform: rotate(-4deg); color: var(--ok);
+}
+.stamp.no { color: var(--no); }
+.ticket.is-dismissed .finding, .ticket.is-dismissed .action, .ticket.is-dismissed h3 { color: var(--muted); }
+
+/* how the score is built */
+.how h3 { font-size: 1.2rem; }
+.how p { color: var(--ink-2); margin-top: 0.5rem; }
+.how .receipt { font-size: 0.92rem; }
+.how .receipt .row { grid-template-columns: minmax(0, 1fr) max-content; }
+.how .why { display: block; grid-column: 1 / -1; font-family: "Recursive", system-ui, sans-serif; font-variation-settings: "CASL" 0; color: var(--muted); font-size: 0.88rem; }
+
+/* ---- the three fixed questions */
+.questions { display: flex; flex-wrap: wrap; gap: 0.6rem; }
+.questions .btn { border-color: var(--on-counter); color: var(--on-counter); padding: 0.65rem 1.2rem; }
+.questions .btn:hover { background: var(--on-counter); color: var(--counter-deep); }
+.answer { margin-top: 1.1rem; }
+.answer h3 { font-size: 1.45rem; font-weight: 800; }
+.answer .finding { max-width: 46em; }
+.answer .evidence { margin-top: 0.8rem; padding-top: 0.7rem; border-top: 2px dashed var(--rule); color: var(--ink-2); font-size: 0.95rem; max-width: 50em; }
+.answer .source { color: var(--muted); font-size: 0.88rem; margin-top: 0.5rem; }
+
+.foot { color: var(--on-counter-soft); border-top: 1px solid rgba(255, 253, 247, 0.25); margin-top: 3rem; padding-top: 1.1rem; font-size: 0.92rem; max-width: 60em; }
+.foot a { color: var(--on-counter); text-underline-offset: 3px; }
+
+@media (max-width: 760px) {
+  .page { padding: 0 1rem 2.5rem; }
+  .strip { grid-template-columns: 1fr 1fr; row-gap: 1.1rem; }
+  .figure:nth-child(odd) { border-left: 0; }
+  .figure { padding: 0.2rem 1.1rem; }
+  .paper { padding-left: 1.1rem; padding-right: 1.1rem; }
+  .strip { padding-left: 0; padding-right: 0; }
+  .score b { font-size: 2.4rem; }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .stamp { animation: stamp 0.25s ease-out; }
+  @keyframes stamp { from { transform: rotate(-4deg) scale(1.6); opacity: 0; } to { transform: rotate(-4deg) scale(1); opacity: 1; } }
+}

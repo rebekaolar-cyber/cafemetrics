@@ -256,3 +256,43 @@ class TestConfidenceExamples:
         )
         # Low consistency (3%), but large effect and good p-value
         assert score_to_band(score) == "MEDIUM"
+
+
+class TestConfidenceBreakdown:
+    """The itemised score must add up to the score itself."""
+
+    def test_parts_sum_to_the_score(self):
+        from src.confidence import confidence_breakdown
+
+        for inputs in (
+            dict(sample_size=92, consistency_ratio=1.0, effect_size=0.176, p_value=1.3e-7),
+            dict(sample_size=10, consistency_ratio=0.6, effect_size=0.1, p_value=0.10),
+            dict(sample_size=60, consistency_ratio=1.0, effect_size=2.0, p_value=0.001),
+            dict(sample_size=1, consistency_ratio=0.0, effect_size=0.0, p_value=1.0),
+        ):
+            parts = confidence_breakdown(**inputs)
+            assert int(round(sum(part["points"] for part in parts))) == compute_confidence(**inputs)
+
+    def test_parts_are_named_and_capped_at_their_weight(self):
+        from src.confidence import WEIGHTS, confidence_breakdown
+
+        parts = confidence_breakdown(sample_size=500, consistency_ratio=1.0, effect_size=9.0, p_value=0.0)
+        assert [part["name"] for part in parts] == list(WEIGHTS)
+        assert [part["max_points"] for part in parts] == [25, 35, 25, 15]
+        assert all(part["points"] == pytest.approx(part["max_points"]) for part in parts)
+
+    def test_the_sample_dip_loses_its_points_on_effect_size(self):
+        """The dashboard's example: 79/100, full marks everywhere except the small effect."""
+        from src.confidence import confidence_breakdown
+
+        parts = confidence_breakdown(sample_size=92, consistency_ratio=1.0, effect_size=0.176, p_value=1.3e-7)
+        points = {part["name"]: part["points"] for part in parts}
+        assert points["Sample size"] == 25 and points["Consistency"] == 35
+        assert points["Effect size"] == pytest.approx(3.52)
+        assert points["Significance"] == pytest.approx(15, abs=0.001)
+
+    def test_invalid_inputs_are_rejected(self):
+        from src.confidence import confidence_breakdown
+
+        with pytest.raises(ValueError):
+            confidence_breakdown(sample_size=0, consistency_ratio=0.5, effect_size=0.5, p_value=0.5)

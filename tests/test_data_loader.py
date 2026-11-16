@@ -58,7 +58,7 @@ def test_load_sales_data_missing_columns(tmp_path):
     csv_path = tmp_path / "incomplete.csv"
     df.to_csv(csv_path, index=False)
 
-    with pytest.raises(ValueError, match="Missing required columns"):
+    with pytest.raises(ValueError, match="missing required columns"):
         load_sales_data(str(csv_path))
 
 

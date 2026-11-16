@@ -1,85 +1,81 @@
-"""CaféMetrics dashboard: transparent, auditable café sales analytics."""
+"""CaféMetrics dashboard: transparent, auditable café sales analytics.
+
+The page, top to bottom:
+- masthead: what this is and which data it reads
+- the till strip: four totals
+- revenue by hour of the day, with the afternoon window the dip rule checks marked
+- the findings, one ticket each, with the confidence score itemised like a receipt
+- three fixed questions, answered from the analysis (src/answers.py), never from canned text
+
+How it looks is in assets/style.css. This file is structure and callbacks.
+"""
 
 import os
-import pandas as pd
-import plotly.graph_objects as go
-from dash import Dash, dcc, html, Input, Output, State, callback
 import sys
 from pathlib import Path
 
+import plotly.graph_objects as go
+from dash import ALL, Dash, Input, Output, ctx, dcc, html
+from dash.exceptions import PreventUpdate
+
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.data_loader import load_sales_data, aggregate_by_hour
-from src.metrics import summary_metrics
+from src.analysis import analyze_all
+from src.answers import Answer, anomaly_answer, dip_answer, trend_answer
+from src.confidence import WEIGHTS, confidence_breakdown
+from src.data_loader import aggregate_by_hour, get_data_span, load_sales_data
 from src.insights import generate_all_insights
-from src.verification import (
-    init_db,
-    save_insight,
-    get_insights,
-    update_insight_status,
-    clear_db,
-)
+from src.metrics import summary_metrics
+from src.verification import get_insights, init_db, save_insight, update_insight_status
+
+REPO = "https://github.com/rebekaolar-cyber/cafemetrics"
+DATA_FILE = "data/sample_sales.csv"
+BAR, HOT, INK, INK2, RULE = "#0a6c71", "#e96a24", "#14302f", "#45605e", "#c5d1ce"
+FONT = "Recursive, system-ui, sans-serif"
 
 # Load data with clear error reporting
 DATA_LOAD_ERROR = None
+df = None
+metrics = {}
+insights = []
+hourly = None
+analysis = None
+trading_days = 0
 try:
-    df = load_sales_data("data/sample_sales.csv")
+    df = load_sales_data(DATA_FILE)
     metrics = summary_metrics(df)
     insights = generate_all_insights(df)
     hourly = aggregate_by_hour(df)
-except FileNotFoundError as e:
+    analysis = analyze_all(df)
+    _, trading_days = get_data_span(df)
+except (FileNotFoundError, ValueError) as e:
     DATA_LOAD_ERROR = str(e)
-    print(f"❌ {DATA_LOAD_ERROR}")
-    df = None
-    metrics = {}
-    insights = []
-    hourly = None
-except ValueError as e:
-    DATA_LOAD_ERROR = str(e)
-    print(f"❌ {DATA_LOAD_ERROR}")
-    df = None
-    metrics = {}
-    insights = []
-    hourly = None
+    print(f"Data loading failed: {DATA_LOAD_ERROR}")
 except Exception as e:
-    # Unexpected error — log it but don't expose full traceback to user
+    # Unexpected error: log it, but don't show a full traceback to the user
     DATA_LOAD_ERROR = (
         f"Unexpected error loading data. Check logs for details.\n"
         f"Error type: {type(e).__name__}"
     )
-    print(f"❌ {DATA_LOAD_ERROR}")
+    print(f"Data loading failed: {DATA_LOAD_ERROR}")
     print(f"   Full error: {e}")
-    df = None
-    metrics = {}
-    insights = []
-    hourly = None
-
-# Color scheme
-TEAL = "#01696f"
-BG_LIGHT = "#f5f5f5"
-WHITE = "#ffffff"
-GRAY_TEXT = "#666"
 
 # Initialize database and manage insights
 init_db()
 
-# Save each insight to the database and check for existing status
+# Save each insight to the database, or pick up the status it already has there
 insight_db_cache = {}
 if insights:
     for insight in insights:
-        # Check if this insight already exists in the database
         existing = get_insights()
         existing_insight = next(
             (i for i in existing if i.get("pattern_type") == insight.pattern_type),
             None,
         )
-
         if existing_insight:
-            # Use existing record ID and restore its status
             insight_db_cache[insight.pattern_type] = existing_insight["id"]
             insight.status = existing_insight["status"]
         else:
-            # Create new record with pending status
             db_id = save_insight(
                 title=insight.title,
                 pattern_type=insight.pattern_type,
@@ -89,410 +85,340 @@ if insights:
             insight_db_cache[insight.pattern_type] = db_id
             insight.status = "pending"
 
-# Create Dash app
-app = Dash(__name__, title="CaféMetrics")
-server = app.server  # For Gunicorn
 
-app.layout = html.Div(
-    style={
-        "fontFamily": "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
-        "backgroundColor": BG_LIGHT,
-        "minHeight": "100vh",
-        "padding": "0 20px",
-    },
-    children=[
-        # Hidden store for insight metadata (pattern_type -> db_id mapping)
-        dcc.Store(id="insight-store", data=insight_db_cache),
+# ---------------------------------------------------------------- building blocks ------------
 
-        # Header
-        html.Div(
-            style={"maxWidth": 1200, "margin": "0 auto", "paddingTop": 40},
-            children=[
-                html.H1(
-                    "☕ CaféMetrics",
-                    style={
-                        "color": TEAL,
-                        "marginBottom": 8,
-                        "fontSize": 32,
-                        "fontWeight": 700,
-                    },
-                ),
-                html.P(
-                    "Rule-based sales analysis with transparent confidence scoring",
-                    style={"color": GRAY_TEXT, "marginBottom": 32, "fontSize": 14},
-                ),
-            ],
-        ),
-
-        # Error banner (shown if data loading failed)
-        (html.Div(
-            style={
-                "maxWidth": 1200,
-                "margin": "0 auto 20px auto",
-                "padding": 16,
-                "backgroundColor": "#f8d7da",
-                "color": "#721c24",
-                "borderRadius": 8,
-                "border": "1px solid #f5c6cb",
-                "whiteSpace": "pre-wrap",
-                "fontFamily": "monospace",
-                "fontSize": 13,
-            },
-            children=[
-                html.H4("❌ Data Loading Failed", style={"margin": "0 0 12px 0"}),
-                html.P(DATA_LOAD_ERROR, style={"margin": 0}),
-            ],
-        ) if DATA_LOAD_ERROR else None),
-
-        # Main content container
-        html.Div(
-            style={"maxWidth": 1200, "margin": "0 auto", "paddingBottom": 60},
-            children=[
-                # KPI cards
-                html.Div(
-                    style={"display": "flex", "gap": 16, "marginBottom": 40, "flexWrap": "wrap"},
-                    children=[
-                        html.Div(
-                            style={
-                                "flex": "1 1 200px",
-                                "backgroundColor": WHITE,
-                                "padding": 20,
-                                "borderRadius": 12,
-                                "boxShadow": "0 1px 3px rgba(0,0,0,0.1)",
-                            },
-                            children=[
-                                html.P("Total Revenue", style={"margin": 0, "color": GRAY_TEXT, "fontSize": 12, "fontWeight": 600}),
-                                html.P(
-                                    f"£{metrics.get('total_revenue', 0):,.0f}",
-                                    style={"margin": "8px 0 0 0", "color": TEAL, "fontSize": 28, "fontWeight": 700},
-                                ),
-                            ],
-                        ),
-                        html.Div(
-                            style={
-                                "flex": "1 1 200px",
-                                "backgroundColor": WHITE,
-                                "padding": 20,
-                                "borderRadius": 12,
-                                "boxShadow": "0 1px 3px rgba(0,0,0,0.1)",
-                            },
-                            children=[
-                                html.P("Avg Daily", style={"margin": 0, "color": GRAY_TEXT, "fontSize": 12, "fontWeight": 600}),
-                                html.P(
-                                    f"£{metrics.get('avg_daily_revenue', 0):,.0f}",
-                                    style={"margin": "8px 0 0 0", "color": TEAL, "fontSize": 28, "fontWeight": 700},
-                                ),
-                            ],
-                        ),
-                        html.Div(
-                            style={
-                                "flex": "1 1 200px",
-                                "backgroundColor": WHITE,
-                                "padding": 20,
-                                "borderRadius": 12,
-                                "boxShadow": "0 1px 3px rgba(0,0,0,0.1)",
-                            },
-                            children=[
-                                html.P("Transactions", style={"margin": 0, "color": GRAY_TEXT, "fontSize": 12, "fontWeight": 600}),
-                                html.P(
-                                    f"{metrics.get('total_transactions', 0):,}",
-                                    style={"margin": "8px 0 0 0", "color": TEAL, "fontSize": 28, "fontWeight": 700},
-                                ),
-                            ],
-                        ),
-                        html.Div(
-                            style={
-                                "flex": "1 1 200px",
-                                "backgroundColor": WHITE,
-                                "padding": 20,
-                                "borderRadius": 12,
-                                "boxShadow": "0 1px 3px rgba(0,0,0,0.1)",
-                            },
-                            children=[
-                                html.P("Peak Hour", style={"margin": 0, "color": GRAY_TEXT, "fontSize": 12, "fontWeight": 600}),
-                                html.P(
-                                    f"{int(metrics.get('peak_hour', 0)):02d}:00",
-                                    style={"margin": "8px 0 0 0", "color": TEAL, "fontSize": 28, "fontWeight": 700},
-                                ),
-                            ],
-                        ),
-                    ],
-                ),
-
-                # Hourly chart
-                html.Div(
-                    style={
-                        "backgroundColor": WHITE,
-                        "padding": 24,
-                        "borderRadius": 12,
-                        "marginBottom": 40,
-                        "boxShadow": "0 1px 3px rgba(0,0,0,0.1)",
-                    },
-                    children=[
-                        html.H3("Hourly Revenue Pattern", style={"color": TEAL, "marginBottom": 20, "fontSize": 18}),
-                        dcc.Graph(id="hourly-chart", style={"margin": 0}),
-                    ],
-                ),
-
-                # Insights panel
-                html.Div(
-                    style={
-                        "backgroundColor": WHITE,
-                        "padding": 24,
-                        "borderRadius": 12,
-                        "boxShadow": "0 1px 3px rgba(0,0,0,0.1)",
-                    },
-                    children=[
-                        html.H3("Insights (Transparent & Auditable)", style={"color": TEAL, "marginBottom": 20, "fontSize": 18}),
-                        html.Div(id="insights-container", children=[
-                            html.Div(
-                                style={"padding": 12, "backgroundColor": "#f0f0f0", "borderRadius": 8, "marginBottom": 16},
-                                children=[
-                                    html.P(
-                                        "No insights yet. Analyze your data using the Q&A buttons below.",
-                                        style={"color": GRAY_TEXT, "margin": 0},
-                                    ),
-                                ],
-                            )
-                        ] if not insights else [
-                            html.Div(
-                                id={"type": "insight-card", "index": insight.pattern_type},
-                                style={
-                                    "padding": 16,
-                                    "borderLeft": f"4px solid {TEAL}",
-                                    "backgroundColor": "#f9fafb",
-                                    "borderRadius": 8,
-                                    "marginBottom": 16,
-                                },
-                                children=[
-                                    html.Div(
-                                        style={"display": "flex", "justifyContent": "space-between", "alignItems": "start"},
-                                        children=[
-                                            html.Div(
-                                                children=[
-                                                    html.H4(insight.title, style={"margin": "0 0 4px 0", "color": TEAL, "fontSize": 16}),
-                                                    html.Span(
-                                                        insight.confidence_band,
-                                                        style={
-                                                            "display": "inline-block",
-                                                            "padding": "4px 8px",
-                                                            "backgroundColor": {"HIGH": "#d4edda", "MEDIUM": "#fff3cd", "LOW": "#f8d7da"}.get(insight.confidence_band, "#e2e3e5"),
-                                                            "color": {"HIGH": "#155724", "MEDIUM": "#856404", "LOW": "#721c24"}.get(insight.confidence_band, "#383d41"),
-                                                            "borderRadius": 4,
-                                                            "fontSize": 11,
-                                                            "fontWeight": 600,
-                                                            "marginRight": 8,
-                                                        },
-                                                    ),
-                                                    html.Span(
-                                                        f"{insight.confidence_score}/100",
-                                                        style={"fontSize": 12, "color": GRAY_TEXT},
-                                                    ),
-                                                    # Status badge
-                                                    (html.Span(
-                                                        "✓ Verified",
-                                                        style={
-                                                            "display": "inline-block",
-                                                            "padding": "4px 8px",
-                                                            "backgroundColor": "#d4edda",
-                                                            "color": "#155724",
-                                                            "borderRadius": 4,
-                                                            "fontSize": 11,
-                                                            "fontWeight": 600,
-                                                            "marginLeft": 8,
-                                                        },
-                                                    ) if insight.status == "verified" else
-                                                    html.Span(
-                                                        "✗ Dismissed",
-                                                        style={
-                                                            "display": "inline-block",
-                                                            "padding": "4px 8px",
-                                                            "backgroundColor": "#f8d7da",
-                                                            "color": "#721c24",
-                                                            "borderRadius": 4,
-                                                            "fontSize": 11,
-                                                            "fontWeight": 600,
-                                                            "marginLeft": 8,
-                                                        },
-                                                    ) if insight.status == "dismissed" else None),
-                                                    html.P(insight.text, style={"margin": "12px 0 8px 0", "color": "#333", "fontSize": 14}),
-                                                    html.P(
-                                                        f"📊 Basis: {insight.basis}",
-                                                        style={"margin": "0 0 8px 0", "color": GRAY_TEXT, "fontSize": 12, "fontStyle": "italic"},
-                                                    ),
-                                                    html.P(
-                                                        f"✓ Action: {insight.suggested_action}",
-                                                        style={"margin": "0", "color": "#333", "fontSize": 13},
-                                                    ),
-                                                ],
-                                            ),
-                                            # Only show buttons if status is still "pending"
-                                            (html.Div(
-                                                style={"display": "flex", "gap": 8},
-                                                children=[
-                                                    html.Button(
-                                                        "✓ Verify",
-                                                        id={"type": "verify-btn", "index": insight.pattern_type},
-                                                        style={
-                                                            "padding": "6px 12px",
-                                                            "fontSize": 12,
-                                                            "backgroundColor": "#d4edda",
-                                                            "color": "#155724",
-                                                            "border": "1px solid #c3e6cb",
-                                                            "borderRadius": 4,
-                                                            "cursor": "pointer",
-                                                        },
-                                                    ),
-                                                    html.Button(
-                                                        "✗ Dismiss",
-                                                        id={"type": "dismiss-btn", "index": insight.pattern_type},
-                                                        style={
-                                                            "padding": "6px 12px",
-                                                            "fontSize": 12,
-                                                            "backgroundColor": "#f8d7da",
-                                                            "color": "#721c24",
-                                                            "border": "1px solid #f5c6cb",
-                                                            "borderRadius": 4,
-                                                            "cursor": "pointer",
-                                                        },
-                                                    ),
-                                                ],
-                                            ) if insight.status == "pending" else None),
-                                        ],
-                                    ),
-                                ],
-                            )
-                            for insight in insights
-                        ]),
-                    ],
-                ),
-
-                # Q&A section (fixed buttons, no LLM)
-                html.Div(
-                    style={
-                        "backgroundColor": WHITE,
-                        "padding": 24,
-                        "borderRadius": 12,
-                        "marginTop": 40,
-                        "boxShadow": "0 1px 3px rgba(0,0,0,0.1)",
-                    },
-                    children=[
-                        html.H3("Quick Questions", style={"color": TEAL, "marginBottom": 20, "fontSize": 18}),
-                        html.P(
-                            "Select a question to dive into the analysis. All answers are rule-based and fully auditable.",
-                            style={"color": GRAY_TEXT, "marginBottom": 16, "fontSize": 13},
-                        ),
-                        html.Div(
-                            style={"display": "flex", "gap": 12, "flexWrap": "wrap"},
-                            children=[
-                                html.Button(
-                                    "📉 Why the afternoon dip?",
-                                    id="q-dip",
-                                    style={
-                                        "padding": "12px 16px",
-                                        "fontSize": 13,
-                                        "backgroundColor": TEAL,
-                                        "color": WHITE,
-                                        "border": "none",
-                                        "borderRadius": 6,
-                                        "cursor": "pointer",
-                                        "fontWeight": 600,
-                                    },
-                                ),
-                                html.Button(
-                                    "📈 What's the trend?",
-                                    id="q-trend",
-                                    style={
-                                        "padding": "12px 16px",
-                                        "fontSize": 13,
-                                        "backgroundColor": TEAL,
-                                        "color": WHITE,
-                                        "border": "none",
-                                        "borderRadius": 6,
-                                        "cursor": "pointer",
-                                        "fontWeight": 600,
-                                    },
-                                ),
-                                html.Button(
-                                    "🎯 Any anomalies?",
-                                    id="q-anomaly",
-                                    style={
-                                        "padding": "12px 16px",
-                                        "fontSize": 13,
-                                        "backgroundColor": TEAL,
-                                        "color": WHITE,
-                                        "border": "none",
-                                        "borderRadius": 6,
-                                        "cursor": "pointer",
-                                        "fontWeight": 600,
-                                    },
-                                ),
-                            ],
-                        ),
-                        html.Div(id="qa-output", style={"marginTop": 20}),
-                    ],
-                ),
-            ],
-        ),
-
-        # Footer
-        html.Div(
-            style={
-                "backgroundColor": "#333",
-                "color": "white",
-                "padding": 32,
-                "marginTop": 40,
-                "textAlign": "center",
-                "fontSize": 12,
-            },
-            children=[
-                html.P(
-                    "CaféMetrics • Rule-based Analytics • No LLM Calls • Fully Auditable",
-                    style={"margin": "0 0 8px 0"},
-                ),
-                html.P(
-                    "Transparency score = sample size + consistency + effect size + p-value",
-                    style={"margin": 0, "color": "#aaa"},
-                ),
-            ],
-        ),
-    ],
-)
+BAND_WORDS = {"HIGH": "High confidence", "MEDIUM": "Medium confidence", "LOW": "Low confidence"}
+WHY_IT_COUNTS = {
+    "Sample size": "more days, less chance; full marks from 30 days",
+    "Consistency": "the share of days the pattern shows up",
+    "Effect size": "how big the difference is; full marks from 1.25",
+    "Significance": "only counts when p is below 0.05",
+}
 
 
-@app.callback(
-    Output("hourly-chart", "figure"),
-    Input("hourly-chart", "id"),
-)
-def update_hourly_chart(_):
-    """Generate hourly revenue chart."""
+def figure(value, label):
+    """One total on the till strip."""
+    return html.Div(className="figure", children=[html.B(value), html.Span(label)])
+
+
+def till_strip():
+    return html.Section(
+        className="paper strip figures",
+        children=[
+            figure(f"£{metrics.get('total_revenue', 0):,.0f}", f"taken in {trading_days} days"),
+            figure(f"£{metrics.get('avg_daily_revenue', 0):,.0f}", "on an average day"),
+            figure(f"{metrics.get('total_transactions', 0):,}", "sales"),
+            figure(f"{int(metrics.get('peak_hour', 0)):02d}:00", "the busiest hour"),
+        ],
+    )
+
+
+def dip_hours():
+    """The hours the afternoon-dip rule checks, if it found a dip."""
+    dip = analysis["afternoon_dip"] if analysis else None
+    return dip["dip_hours"] if dip and dip["detected"] else []
+
+
+def hourly_figure():
+    """Revenue by hour of the day, summed over the whole period."""
     if hourly is None:
         return go.Figure()
 
-    hourly_rev = hourly.groupby("hour")["total_revenue"].sum().reset_index()
+    by_hour = hourly.groupby("hour")["total_revenue"].sum()
+    marked = dip_hours()
+    peak = by_hour.idxmax()
 
-    fig = go.Figure()
-    fig.add_trace(
+    fig = go.Figure(
         go.Bar(
-            x=hourly_rev["hour"],
-            y=hourly_rev["total_revenue"],
-            marker_color=TEAL,
-            name="Revenue",
+            x=by_hour.index,
+            y=by_hour.values,
+            marker_color=[HOT if hour in marked else BAR for hour in by_hour.index],
+            width=0.62,
+            text=[f"£{value / 1000:.1f}k" if hour == peak else "" for hour, value in by_hour.items()],
+            textposition="outside",
+            textfont=dict(color=INK, size=14),
+            constraintext="none",
+            customdata=[f"{hour:02d}:00 to {hour + 1:02d}:00" for hour in by_hour.index],
+            hovertemplate="%{customdata}<br>£%{y:,.0f}<extra></extra>",
+            cliponaxis=False,
         )
     )
-
     fig.update_layout(
-        title=None,
-        xaxis_title="Hour of Day",
-        yaxis_title="Revenue (£)",
-        hovermode="x unified",
-        plot_bgcolor=BG_LIGHT,
-        paper_bgcolor=WHITE,
-        margin=dict(l=50, r=20, t=20, b=50),
-        font=dict(family="Arial"),
+        height=340,
+        margin=dict(l=8, r=8, t=28, b=8),
+        plot_bgcolor="rgba(0,0,0,0)",
+        paper_bgcolor="rgba(0,0,0,0)",
+        font=dict(family=FONT, size=13, color=INK2),
+        showlegend=False,
+        hoverlabel=dict(font=dict(family=FONT, size=13), bgcolor="#fffdf7", bordercolor=RULE),
+        bargap=0.3,
+    )
+    fig.update_xaxes(
+        tickmode="array",
+        tickvals=list(by_hour.index),
+        ticktext=[f"{hour:02d}" for hour in by_hour.index],
+        title_text="hour of the day",
+        title_font=dict(size=12),
+        showgrid=False,
+        linecolor=RULE,
+        ticks="",
+        fixedrange=True,
+    )
+    fig.update_yaxes(
+        tickprefix="£", tickformat="~s", gridcolor="#e3eae8", zeroline=False, ticks="",
+        fixedrange=True, rangemode="tozero",
+    )
+    return fig
+
+
+def chart_ticket():
+    marked = dip_hours()
+    key = [html.Span([html.I(), "revenue in that hour, all days added up"])]
+    if marked:
+        window = f"{min(marked):02d}:00 to {max(marked) + 1:02d}:00"
+        key.append(html.Span([html.I(className="hot"), f"{window}, the window the dip rule checks"]))
+    return html.Section(
+        className="paper",
+        children=[
+            html.Div(className="key", children=key),
+            dcc.Graph(id="hourly-chart", figure=hourly_figure(), config={"displayModeBar": False}),
+        ],
     )
 
-    return fig
+
+def receipt(insight):
+    """The confidence score itemised: points earned by each of its four parts."""
+    if not insight.evidence:
+        return None
+    rows = []
+    for part in confidence_breakdown(**insight.evidence):
+        share = part["points"] / part["max_points"] * 100
+        rows.append(
+            html.Div(
+                className="row",
+                children=[
+                    html.Span(part["name"], className="name"),
+                    html.Span(f"{part['points']:.1f} of {part['max_points']:.0f}", className="points"),
+                    html.Div(html.I(style={"width": f"{share:.0f}%"}), className="meter"),
+                ],
+            )
+        )
+    rows.append(
+        html.Div(
+            className="row total",
+            children=[
+                html.Span("Confidence", className="name"),
+                html.Span(f"{insight.confidence_score} of 100", className="points"),
+            ],
+        )
+    )
+    return html.Div(className="receipt", children=rows)
+
+
+def ticket_foot(insight):
+    """Verify and Dismiss while the finding is open; the stamp once it has been judged."""
+    if insight.status == "verified":
+        return [html.Span("Verified", className="stamp")]
+    if insight.status == "dismissed":
+        return [html.Span("Dismissed", className="stamp no")]
+    return [
+        html.Span("Does this match what you see in the café?", className="ask"),
+        html.Button(
+            "Verify",
+            id={"type": "verify-btn", "index": insight.pattern_type},
+            className="btn primary",
+        ),
+        html.Button(
+            "Dismiss",
+            id={"type": "dismiss-btn", "index": insight.pattern_type},
+            className="btn",
+        ),
+    ]
+
+
+def ticket_body(insight):
+    """Everything printed on one finding's ticket."""
+    return [
+        html.Div(
+            className="ticket-head",
+            children=[
+                html.Div([
+                    html.H3(insight.title),
+                    html.P(BAND_WORDS.get(insight.confidence_band, insight.confidence_band), className="band"),
+                ]),
+                html.Div(className="score", children=[html.B(str(insight.confidence_score)), " of 100"]),
+            ],
+        ),
+        html.P(insight.text, className="finding"),
+        receipt(insight),
+        html.P(f"Based on {insight.basis}.", className="basis"),
+        html.P([html.B("What to do"), insight.suggested_action], className="action"),
+        html.Div(className="ticket-foot", children=ticket_foot(insight)),
+    ]
+
+
+def ticket_class(insight):
+    return f"paper ticket is-{insight.status}"
+
+
+def scoring_ticket():
+    """How every confidence score on the page is put together."""
+    rows = [
+        html.Div(
+            className="row",
+            children=[
+                html.Span(name, className="name"),
+                html.Span(f"up to {weight * 100:.0f}", className="points"),
+                html.Span(WHY_IT_COUNTS[name], className="why"),
+            ],
+        )
+        for name, weight in WEIGHTS.items()
+    ]
+    rows.append(
+        html.Div(
+            className="row total",
+            children=[html.Span("Confidence", className="name"), html.Span("up to 100", className="points")],
+        )
+    )
+    return html.Aside(
+        className="paper ticket how",
+        children=[
+            html.H3("How a score is added up"),
+            html.P("Every finding is scored out of 100 by the same four rules. No model, no AI."),
+            html.Div(className="receipt", children=rows),
+            html.P("85 or more is high, 60 to 84 medium, under 60 low.", className="basis"),
+        ],
+    )
+
+
+def findings():
+    if not insights:
+        note = html.Div(
+            className="paper ticket",
+            children=[
+                html.H3("Nothing to report"),
+                html.P(
+                    "The rules found no dip, trend or unusual day in this data. "
+                    "The questions below show the numbers behind that.",
+                    className="finding",
+                ),
+            ],
+        )
+        return [note, scoring_ticket()]
+    tickets = [
+        html.Article(
+            id={"type": "insight-card", "index": insight.pattern_type},
+            className=ticket_class(insight),
+            children=ticket_body(insight),
+        )
+        for insight in insights
+    ]
+    return tickets + [scoring_ticket()]
+
+
+def answer_block(answer: Answer):
+    return html.Div(
+        className="paper answer",
+        children=[
+            html.H3(answer.title),
+            html.P(answer.finding, className="finding"),
+            html.P(answer.evidence, className="evidence"),
+            html.P("Filled in from this data by a fixed template. No AI wrote it.", className="source"),
+        ],
+    )
+
+
+def period():
+    if df is None:
+        return ""
+    first, last = df["date"].min(), df["date"].max()
+    return f"{first.day} {first:%B} to {last.day} {last:%B %Y}"
+
+
+# ---------------------------------------------------------------- page ----------------------
+
+app = Dash(
+    __name__,
+    title="CaféMetrics",
+    meta_tags=[{"name": "viewport", "content": "width=device-width, initial-scale=1"}],
+)
+server = app.server  # For Gunicorn
+
+def page():
+    """The whole page. Built on every visit, so a reload shows each finding's current stamp."""
+    return html.Div(
+        className="page",
+        children=[
+            # Hidden store for insight metadata (pattern_type -> db_id mapping)
+            dcc.Store(id="insight-store", data=insight_db_cache),
+
+            html.Header(
+                className="mast",
+                children=[
+                    html.Div(
+                        className="mast-top",
+                        children=[
+                            html.B("CaféMetrics"),
+                            html.Span(f"Sample data, generated: {period()}") if df is not None else None,
+                        ],
+                    ),
+                    html.H1("What do the sales say?"),
+                    html.P(
+                        "Café sales read by fixed rules, not by AI. Every finding shows how sure it "
+                        "is, and exactly where that number comes from.",
+                        className="lede",
+                    ),
+                ],
+            ),
+
+            # Error banner (shown if data loading failed)
+            (html.Div(
+                className="error",
+                children=[html.H2("The sales file could not be loaded"), html.P(DATA_LOAD_ERROR)],
+            ) if DATA_LOAD_ERROR else None),
+
+            html.Main(
+                children=[
+                    till_strip(),
+
+                    html.H2("The day, hour by hour", className="section-title"),
+                    chart_ticket(),
+
+                    html.H2("What the rules found", className="section-title"),
+                    html.Div(id="insights-container", className="tickets", children=findings()),
+
+                    html.H2("Ask the data", className="section-title"),
+                    html.P(
+                        "Three fixed questions. Each answer is worked out from the sales file as you ask.",
+                        className="section-note",
+                    ),
+                    html.Div(
+                        className="questions",
+                        children=[
+                            html.Button("Is there an afternoon dip?", id="q-dip", className="btn"),
+                            html.Button("Is revenue rising or falling?", id="q-trend", className="btn"),
+                            html.Button("Did any day stand out?", id="q-anomaly", className="btn"),
+                        ],
+                    ),
+                    html.Div(id="qa-output", **{"aria-live": "polite"}),
+                ],
+            ),
+
+            html.Footer(
+                className="foot",
+                children=[
+                    "Built by Rebeka Olar. Rule-based: no AI is called, and every number on this page "
+                    "can be recomputed from the sales file. ",
+                    html.A("Code and tests on GitHub", href=REPO),
+                    ".",
+                ],
+            ),
+        ],
+    )
+
+
+app.layout = page
 
 
 @app.callback(
@@ -505,56 +431,26 @@ def update_hourly_chart(_):
     prevent_initial_call=True,
 )
 def handle_qa(dip_clicks, trend_clicks, anomaly_clicks):
-    """Handle Q&A button clicks with fixed responses."""
-    from dash import ctx
-    if not ctx.triggered:
-        return html.Div()
+    """Answer the clicked question from the analysis of the loaded data."""
+    if analysis is None:
+        raise PreventUpdate
 
-    button_id = ctx.triggered[0]["prop_id"].split(".")[0]
-
-    answer_map = {
-        "q-dip": (
-            "Afternoon Dip (14:00–16:00)",
-            "Sales typically dip in the early afternoon. This could be due to reduced foot traffic after lunch, "
-            "or customers shifting to other nearby options. Consider targeted promotions during this period.",
-        ),
-        "q-trend": (
-            "Revenue Trend",
-            "Overall, revenue shows a slight upward trend over the analysis period. This suggests growing interest "
-            "or improving business conditions. Continue monitoring for seasonal patterns.",
-        ),
-        "q-anomaly": (
-            "Anomalies & Outliers",
-            "Some days show unusually high or low sales. Review what happened on those dates (events, weather, staffing) "
-            "to identify patterns or external factors.",
-        ),
+    answers = {
+        "q-dip": lambda: dip_answer(analysis["afternoon_dip"]),
+        "q-trend": lambda: trend_answer(analysis["trend"]),
+        "q-anomaly": lambda: anomaly_answer(analysis["anomalies"]),
     }
-
-    title, answer = answer_map.get(button_id, ("No Answer", "Question not recognized."))
-
-    return html.Div(
-        style={
-            "padding": 16,
-            "backgroundColor": "#f0f8ff",
-            "borderLeft": f"4px solid {TEAL}",
-            "borderRadius": 8,
-        },
-        children=[
-            html.H4(title, style={"color": TEAL, "margin": "0 0 12px 0"}),
-            html.P(answer, style={"margin": 0, "color": "#333", "lineHeight": 1.5}),
-            html.P(
-                "💡 This answer is rule-based, not AI-generated. It's based on statistical analysis of your data.",
-                style={"margin": "12px 0 0 0", "fontSize": 12, "color": GRAY_TEXT, "fontStyle": "italic"},
-            ),
-        ],
-    )
+    if ctx.triggered_id not in answers:
+        raise PreventUpdate
+    return answer_block(answers[ctx.triggered_id]())
 
 
 @app.callback(
-    Output({"type": "insight-card", "index": "ALL"}, "children"),
+    Output({"type": "insight-card", "index": ALL}, "children"),
+    Output({"type": "insight-card", "index": ALL}, "className"),
     [
-        Input({"type": "verify-btn", "index": "ALL"}, "n_clicks"),
-        Input({"type": "dismiss-btn", "index": "ALL"}, "n_clicks"),
+        Input({"type": "verify-btn", "index": ALL}, "n_clicks"),
+        Input({"type": "dismiss-btn", "index": ALL}, "n_clicks"),
     ],
     prevent_initial_call=True,
 )
@@ -562,156 +458,28 @@ def handle_insight_action(verify_clicks, dismiss_clicks):
     """
     Handle Verify/Dismiss button clicks for insights.
 
-    Dash callback explanation:
-    - Input: Listens to clicks on buttons matching pattern {"type": "verify-btn/dismiss-btn"}
-    - Output: Updates ALL insight cards matching {"type": "insight-card"}
-    - ctx.triggered: Tells us which button was clicked and its pattern_type
-    - ALL: Means "all buttons/cards matching this pattern" → fired together
+    - Input: clicks on any button matching {"type": "verify-btn" / "dismiss-btn"}
+    - Output: every insight ticket matching {"type": "insight-card"}, redrawn
+    - ctx.triggered_id: which button was clicked, e.g.
+      {"type": "verify-btn", "index": "afternoon_dip"}
     """
-    from dash import ctx
+    button = ctx.triggered_id
+    # Redrawing the tickets creates new buttons, which also fires this callback (with no click).
+    if not button or not ctx.triggered[0]["value"]:
+        raise PreventUpdate
 
-    if not ctx.triggered:
-        raise Exception("No button triggered")
+    pattern_type = button["index"]
+    new_status = "verified" if button["type"] == "verify-btn" else "dismissed"
 
-    # Get which button was clicked
-    triggered_id = ctx.triggered[0]["prop_id"]
-    button_type = triggered_id.split(".")[0]  # e.g. '{"type": "verify-btn", "index": "afternoon_dip"}'
-
-    # Parse the button ID to extract type (verify/dismiss) and pattern_type (afternoon_dip)
-    import json
-    button_id = json.loads(button_type)
-    action_type = button_id["type"]  # "verify-btn" or "dismiss-btn"
-    pattern_type = button_id["index"]  # e.g. "afternoon_dip"
-
-    # Determine the status to save
-    if "verify" in action_type:
-        new_status = "verified"
-    else:
-        new_status = "dismissed"
-
-    # Find the insight and save to database
     for insight in insights:
         if insight.pattern_type == pattern_type:
-            # Get the database ID from the store
             db_id = insight_db_cache.get(pattern_type)
             if db_id:
                 update_insight_status(db_id, new_status)
-
-            # Mark it in memory so we don't show buttons anymore
-            insight.status = new_status
+            insight.status = new_status  # so the buttons give way to the stamp
             break
 
-    # Rebuild all insight cards with updated statuses
-    return [
-        html.Div(
-            style={
-                "padding": 16,
-                "borderLeft": f"4px solid {TEAL}",
-                "backgroundColor": "#f9fafb",
-                "borderRadius": 8,
-                "marginBottom": 16,
-            },
-            children=[
-                html.Div(
-                    style={"display": "flex", "justifyContent": "space-between", "alignItems": "start"},
-                    children=[
-                        html.Div(
-                            children=[
-                                html.H4(insight.title, style={"margin": "0 0 4px 0", "color": TEAL, "fontSize": 16}),
-                                html.Span(
-                                    insight.confidence_band,
-                                    style={
-                                        "display": "inline-block",
-                                        "padding": "4px 8px",
-                                        "backgroundColor": {"HIGH": "#d4edda", "MEDIUM": "#fff3cd", "LOW": "#f8d7da"}.get(insight.confidence_band, "#e2e3e5"),
-                                        "color": {"HIGH": "#155724", "MEDIUM": "#856404", "LOW": "#721c24"}.get(insight.confidence_band, "#383d41"),
-                                        "borderRadius": 4,
-                                        "fontSize": 11,
-                                        "fontWeight": 600,
-                                        "marginRight": 8,
-                                    },
-                                ),
-                                html.Span(
-                                    f"{insight.confidence_score}/100",
-                                    style={"fontSize": 12, "color": GRAY_TEXT},
-                                ),
-                                # Status badge
-                                (html.Span(
-                                    "✓ Verified",
-                                    style={
-                                        "display": "inline-block",
-                                        "padding": "4px 8px",
-                                        "backgroundColor": "#d4edda",
-                                        "color": "#155724",
-                                        "borderRadius": 4,
-                                        "fontSize": 11,
-                                        "fontWeight": 600,
-                                        "marginLeft": 8,
-                                    },
-                                ) if insight.status == "verified" else
-                                html.Span(
-                                    "✗ Dismissed",
-                                    style={
-                                        "display": "inline-block",
-                                        "padding": "4px 8px",
-                                        "backgroundColor": "#f8d7da",
-                                        "color": "#721c24",
-                                        "borderRadius": 4,
-                                        "fontSize": 11,
-                                        "fontWeight": 600,
-                                        "marginLeft": 8,
-                                    },
-                                ) if insight.status == "dismissed" else None),
-
-                                html.P(insight.text, style={"margin": "12px 0 8px 0", "color": "#333", "fontSize": 14}),
-                                html.P(
-                                    f"📊 Basis: {insight.basis}",
-                                    style={"margin": "0 0 8px 0", "color": GRAY_TEXT, "fontSize": 12, "fontStyle": "italic"},
-                                ),
-                                html.P(
-                                    f"✓ Action: {insight.suggested_action}",
-                                    style={"margin": "0", "color": "#333", "fontSize": 13},
-                                ),
-                            ],
-                        ),
-                        # Only show buttons if status is still "pending"
-                        (html.Div(
-                            style={"display": "flex", "gap": 8},
-                            children=[
-                                html.Button(
-                                    "✓ Verify",
-                                    id={"type": "verify-btn", "index": insight.pattern_type},
-                                    style={
-                                        "padding": "6px 12px",
-                                        "fontSize": 12,
-                                        "backgroundColor": "#d4edda",
-                                        "color": "#155724",
-                                        "border": "1px solid #c3e6cb",
-                                        "borderRadius": 4,
-                                        "cursor": "pointer",
-                                    },
-                                ),
-                                html.Button(
-                                    "✗ Dismiss",
-                                    id={"type": "dismiss-btn", "index": insight.pattern_type},
-                                    style={
-                                        "padding": "6px 12px",
-                                        "fontSize": 12,
-                                        "backgroundColor": "#f8d7da",
-                                        "color": "#721c24",
-                                        "border": "1px solid #f5c6cb",
-                                        "borderRadius": 4,
-                                        "cursor": "pointer",
-                                    },
-                                ),
-                            ],
-                        ) if insight.status == "pending" else None),
-                    ],
-                ),
-            ],
-        )
-        for insight in insights
-    ]
+    return [ticket_body(insight) for insight in insights], [ticket_class(insight) for insight in insights]
 
 
 if __name__ == "__main__":
@@ -730,6 +498,6 @@ if __name__ == "__main__":
     host = os.environ.get("HOST", "127.0.0.1")
 
     if debug:
-        print("⚠️  WARNING: Debug mode is ENABLED. Never use in production.")
+        print("WARNING: Debug mode is ENABLED. Never use in production.")
 
     app.run(debug=debug, host=host, port=port)
