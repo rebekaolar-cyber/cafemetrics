@@ -169,7 +169,7 @@ Coverage includes:
 - **test_verification.py**: audit trail, status updates
 - **test_dashboard.py**: the page builds from the sample data; receipts, stamps, chart marking
 
-**Total: 111 tests, all passing.**
+**Total: 112 tests, all passing.**
 
 ## Project Structure & Design Decisions
 
@@ -289,22 +289,27 @@ For now, the fixed buttons are intentional: they prove the core analysis works a
 - **Type hints** on all public functions
 - **Docstrings** on all modules and public functions
 - **No comments in code** (docstrings handle the why; names handle the what)
-- **111 tests** covering happy paths, edge cases, and error conditions
+- **112 tests** covering happy paths, edge cases, and error conditions
 - **Clean git history** with one-commit-per-module, clear messages
 
 ## Deployment
 
-To deploy on Heroku, Render, or similar:
+To deploy on Render or a similar host, use these two commands:
 
 ```bash
-# Set environment variable for the app
-export FLASK_APP=app/dashboard.py
+# Build
+pip install -r requirements.txt
 
-# Or use gunicorn directly
+# Start
 gunicorn -w 1 -b 0.0.0.0:$PORT app.dashboard:server
 ```
 
-The `requirements.txt` is pinned for reproducibility.
+The `requirements.txt` is pinned for reproducibility, and the pinned versions need Python 3.9 to
+3.11. `.python-version` asks the host for Python 3.11; without it a host may pick a newer Python
+and fail to install.
+
+Verify and Dismiss stamps are kept in a local SQLite file (`insights.db`). On a host with a
+temporary disk they reset whenever the service restarts.
 
 ## Contact & Feedback
 

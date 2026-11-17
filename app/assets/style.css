@@ -53,7 +53,10 @@ p { margin: 0; }
 
 /* ---- masthead, printed straight on the counter */
 .mast { color: var(--on-counter); padding: 1.6rem 0 2.2rem; }
-.mast-top { display: flex; justify-content: space-between; gap: 1rem; flex-wrap: wrap; font-size: 0.95rem; color: var(--on-counter-soft); }
+.mast-top { display: flex; align-items: center; gap: 0.6rem 1.25rem; flex-wrap: wrap; font-size: 0.95rem; color: var(--on-counter-soft); }
+.mast-top b { margin-right: auto; }
+.code-link { padding: 0.45rem 1rem; border-radius: 999px; background: var(--on-counter); color: var(--counter-deep); font-weight: 700; text-decoration: none; }
+.code-link:hover { background: var(--paper); text-decoration: underline; }
 .mast-top b { color: var(--on-counter); font-weight: 800; font-variation-settings: "CASL" 1; font-size: 1.05rem; }
 .mast h1 { font-weight: 900; font-size: clamp(2.6rem, 7vw, 5.6rem); line-height: 0.98; letter-spacing: -0.02em; margin: 2.4rem 0 1rem; }
 .mast .lede { font-size: 1.15rem; max-width: 40em; color: var(--on-counter-soft); }

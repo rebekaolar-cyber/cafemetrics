@@ -361,6 +361,8 @@ def page():
                         children=[
                             html.B("CaféMetrics"),
                             html.Span(f"Sample data, generated: {period()}") if df is not None else None,
+                            html.A("Code on GitHub", href=REPO, target="_blank", rel="noopener",
+                                   className="code-link"),
                         ],
                     ),
                     html.H1("What do the sales say?"),
