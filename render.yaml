@@ -1,0 +1,9 @@
+# Hosting on Render's free plan: https://dashboard.render.com/blueprint/new?repo=https://github.com/rebekaolar-cyber/cafemetrics
+# The Python version comes from .python-version.
+services:
+  - type: web
+    name: cafemetrics
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn -w 1 -b 0.0.0.0:$PORT app.dashboard:server
