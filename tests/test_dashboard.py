@@ -88,3 +88,10 @@ def test_answers_are_printed_with_their_evidence(dashboard):
     answer = dashboard.trend_answer(dashboard.analysis["trend"])
     printed = texts(dashboard.answer_block(answer))
     assert answer.title in printed and answer.finding in printed and answer.evidence in printed
+
+
+def test_the_header_has_a_button_to_the_code(dashboard):
+    links = [c for c in walk(dashboard.page()) if getattr(c, "className", None) == "code-link"]
+    assert len(links) == 1
+    assert links[0].href == dashboard.REPO
+    assert links[0].target == "_blank"
