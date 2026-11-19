@@ -2,6 +2,8 @@
 
 [![tests](https://github.com/rebekaolar-cyber/cafemetrics/actions/workflows/tests.yml/badge.svg)](https://github.com/rebekaolar-cyber/cafemetrics/actions/workflows/tests.yml)
 
+**Live demo: https://cafemetrics.onrender.com** — hosted on a free instance, so the first request after a quiet spell takes up to a minute to wake it.
+
 A portfolio-quality analytics dashboard for café sales data that uses **rule-based statistical analysis** (no LLM) and **transparent confidence scoring** to generate auditable, actionable insights.
 
 ![CaféMetrics dashboard](docs/screenshot.png)
@@ -306,9 +308,20 @@ pip install -r requirements.txt
 gunicorn -w 1 -b 0.0.0.0:$PORT app.dashboard:server
 ```
 
-The `requirements.txt` is pinned for reproducibility, and the pinned versions need Python 3.9 to
-3.11. `.python-version` asks the host for Python 3.11; without it a host may pick a newer Python
-and fail to install.
+The `requirements.txt` is pinned for reproducibility. The pinned versions are tested on Python
+3.11, 3.12 and 3.13 by the CI matrix above. `.python-version` asks the host for 3.11; Render
+honours it, and the matrix means a host that ignores it and picks 3.12 or 3.13 still works.
+
+Two things that are easy to get wrong on Render, both learned the hard way:
+
+- **Leave Root Directory empty.** It makes Render run from the repository root, which is what the
+  build and start commands above assume. If it points anywhere else, the build fails at checkout
+  or the app starts without its data.
+- **A misconfigured deploy does not look broken.** The app returns HTTP 200 on every route even
+  when it cannot find `data/sample_sales.csv`, rendering a page that reads £0 over 0 days with
+  "Nothing to report". Render will report the deploy as live and any health check on `/` will
+  pass. After deploying, confirm the page shows the headline "What do the sales say?" and a total
+  of £117,212 rather than trusting the green tick.
 
 Verify and Dismiss stamps are kept in a local SQLite file (`insights.db`). On a host with a
 temporary disk they reset whenever the service restarts.
