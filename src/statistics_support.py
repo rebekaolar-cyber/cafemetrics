@@ -370,6 +370,44 @@ def format_interval(ci: Dict[str, float], unit: str = "", decimals: int = 2) -> 
     return f"{pct}% CI {bound(low)} to {bound(high)}"
 
 
+def expected_false_flag_rate(z_threshold: float, window: int) -> float:
+    """
+    The share of ordinary days a rolling-window z-score rule would flag.
+
+    For a day scored against the ``window`` days *before* it, the difference
+    ``x - mean(window)`` has variance ``sigma^2 (1 + 1/window)`` while the
+    window's standard deviation estimates ``sigma`` on ``window - 1`` degrees of
+    freedom. So under normal, independent daily revenue::
+
+        z  ~  t(window - 1) * sqrt((window + 1) / window)
+
+    and the two-sided tail area beyond ``z_threshold`` is the rate at which the
+    rule flags days that are not actually unusual. Those fatter-than-normal
+    tails matter a great deal at small windows: with ``window = 7`` a threshold
+    of 2.5 flags 5.8% of ordinary days, not the 1.2% that treating it as a
+    normal deviate would suggest.
+
+    This is a nominal rate under assumptions real café revenue only roughly
+    meets — weekly seasonality alone breaks independence — so it is an order of
+    magnitude for interpreting a threshold, not a guarantee.
+
+    Args:
+        z_threshold: The cut-off on |z|.
+        window: Number of prior days in the reference window (>= 2).
+
+    Returns:
+        The two-sided tail probability, in [0, 1]. Returns 1.0 for a
+        non-positive threshold and 0.0 if the window is too small to give the
+        standard deviation any degrees of freedom.
+    """
+    if window < 2:
+        return 0.0
+    if z_threshold <= 0:
+        return 1.0
+    scale = np.sqrt((window + 1) / window)
+    return float(2 * stats.t.sf(z_threshold / scale, window - 1))
+
+
 def dip_effect_size(hour_means_by_day: Sequence[float], dip_means_by_day: Sequence[float]) -> float:
     """
     The afternoon-dip effect size, exactly as :func:`src.analysis.detect_afternoon_dip` defines it.

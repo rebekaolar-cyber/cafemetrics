@@ -64,8 +64,13 @@ def test_each_ticket_itemises_its_score(dashboard):
     assert dashboard.insights, "the sample data should produce at least one finding"
     for insight in dashboard.insights:
         printed = " ".join(texts(dashboard.receipt(insight)))
-        for part in ("Sample size", "Consistency", "Effect size", "Significance"):
+        for part in ("Sample size", "Consistency", "Effect size"):
             assert part in printed
+        # Significance is printed exactly when a real test stands behind the
+        # finding. The anomaly scan runs no test, so its ticket has three rows
+        # and the other three weights are rescaled to still total 100.
+        tested = insight.evidence.get("p_value") is not None
+        assert ("Significance" in printed) is tested
         assert f"{insight.confidence_score} of 100" in printed
 
 

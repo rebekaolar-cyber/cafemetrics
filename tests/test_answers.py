@@ -115,27 +115,59 @@ def test_trend_without_data():
 ANOMALIES = {
     "detected": True,
     "anomaly_count": 2,
-    "anomaly_ratio": 2 / 92,
+    "anomaly_ratio": 2 / 85,
     "mean_z_score": 0.8,
     "sample_size": 92,
+    "days_scanned": 85,            # the first 7 days have no week before them
+    "days_unscored": 7,
+    "days_unscored_early": 7,
+    "days_unscored_flat": 0,
+    "unscored_note": "7 of 92 days were not scanned: 7 had no full week of sales before them.",
+    "expected_false_flag_rate": 0.0096,
     "anomalous_dates": ["2026-04-25", "2026-05-09"],
 }
 
 
 def test_anomalies_are_listed_by_date():
     answer = anomaly_answer(ANOMALIES)
-    assert answer.title == "2 of 92 days stand out"
+    # Counted against the days actually checked, not the days in the file.
+    assert answer.title == "2 of 85 days stand out"
     assert "2026-04-25, 2026-05-09" in answer.finding
-    assert "2.5 standard deviations" in answer.evidence
+    assert "4 standard deviations" in answer.evidence
+    assert "7 days before it" in answer.evidence
+    assert "not counted in its own average" in answer.evidence
+    # The rule's own false-alarm rate is stated rather than left to the reader.
+    assert "1.0% of ordinary days" in answer.evidence
+    assert "one false alarm every 104 days" in answer.evidence
+    # And the unscanned days are visible, not implied to be clean.
+    assert "7 of 92 days were not scanned" in answer.evidence
 
     one = {**ANOMALIES, "anomaly_count": 1, "anomalous_dates": ["2026-04-25"]}
-    assert anomaly_answer(one).title == "1 of 92 days stands out"
+    assert anomaly_answer(one).title == "1 of 85 days stands out"
 
 
 def test_no_anomalies_and_too_little_data():
     none = {**ANOMALIES, "detected": False, "anomaly_count": 0, "anomalous_dates": []}
     assert anomaly_answer(none).title == "No day stands out"
+    assert "None of the 85 days checked" in anomaly_answer(none).finding
+    # Fewer than 8 days: no day can have a full week before it.
     assert anomaly_answer({**none, "sample_size": 5}).title == "Not enough data to tell"
+    assert anomaly_answer({**none, "sample_size": 7}).title == "Not enough data to tell"
+
+
+def test_a_file_long_enough_but_with_nothing_scannable():
+    """Flat takings every day: long enough to scan, but no scale to scan against."""
+    flat = {
+        **ANOMALIES, "detected": False, "anomaly_count": 0, "anomalous_dates": [],
+        "sample_size": 30, "days_scanned": 0, "days_unscored": 30,
+        "days_unscored_early": 7, "days_unscored_flat": 23,
+        "unscored_note": "30 of 30 days were not scanned: 7 had no full week of sales "
+                         "before them; 23 had a reference week with identical revenue "
+                         "every day, leaving no scale to measure against.",
+    }
+    answer = anomaly_answer(flat)
+    assert answer.title == "Not enough data to tell"
+    assert "identical revenue" in answer.finding
 
 
 def test_answers_agree_with_the_insights_on_the_sample_data():
@@ -179,7 +211,9 @@ def test_the_app_reports_nothing_found_gracefully_when_correction_removes_the_di
     assert "p = 0.080 after correcting for the 2 tests run (raw p = 0.040)" in dip.evidence
 
     assert trend_answer(analysis["trend"]).title == "No clear trend"
-    assert anomaly_answer(analysis["anomalies"]).title == "No day stands out"
+    # The anomaly scan is untouched by the dip's correction: the sample data has
+    # two days that stand out, and they are still reported.
+    assert anomaly_answer(analysis["anomalies"]).title == "2 of 85 days stand out"
 
     # No finding means no insight ticket: the dashboard renders its
     # "Nothing to report" panel from an empty list.

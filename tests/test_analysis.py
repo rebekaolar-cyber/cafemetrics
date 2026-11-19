@@ -265,7 +265,18 @@ def test_detect_anomalies_no_anomalies():
 
 
 def test_detect_anomalies_custom_threshold():
-    """Test anomaly detection with custom z-score threshold."""
+    """Test anomaly detection with custom z-score threshold.
+
+    The baseline carries a little seeded variation on purpose. It used to be a
+    flat 50.0 every day, which only worked because the old code divided by
+    ``rolling_std + 1e-8``: with no variation in the reference week there is no
+    scale to judge a day against, and that 1e-8 turned any deviation at all into
+    an astronomical z-score. Those days are now reported as unscannable instead,
+    so a fixture meant to test threshold *sensitivity* has to contain something
+    to be sensitive to.
+    """
+    rng = np.random.default_rng(20260401)
+    revenue = list(50.0 + rng.normal(0, 2.0, 19)) + [200.0]  # last day is anomalous
     df = pd.DataFrame({
         "date": pd.date_range("2026-04-01", periods=20),
         "hour": [12] * 20,
@@ -274,16 +285,18 @@ def test_detect_anomalies_custom_threshold():
         "product": ["Espresso"] * 20,
         "quantity": [1] * 20,
         "unit_price": [2.50] * 20,
-        "revenue": [50.0] * 19 + [200.0],  # Last day is anomalous
+        "revenue": revenue,
     })
 
     # High threshold: less sensitive
-    result_high = detect_anomalies(df, z_threshold=5.0)
-    assert result_high["anomaly_count"] <= 1
-
+    result_high = detect_anomalies(df, z_threshold=50.0)
     # Low threshold: more sensitive
     result_low = detect_anomalies(df, z_threshold=1.0)
+
+    assert result_high["anomaly_count"] < result_low["anomaly_count"]
     assert result_low["anomaly_count"] >= 1
+    # The planted spike is found at the shipped default, and it is the last day.
+    assert detect_anomalies(df)["anomalous_dates"] == ["2026-04-20"]
 
 
 def test_detect_anomalies_small_sample():
@@ -323,7 +336,14 @@ def test_analyze_all(dip_data):
 
 from scipy import stats
 
-from src.analysis import FAMILY_ALPHA, P_VALUE_TESTS, apply_family_correction
+from src.analysis import (
+    ANOMALY_MIN_DAYS,
+    ANOMALY_WINDOW,
+    DEFAULT_Z_THRESHOLD,
+    FAMILY_ALPHA,
+    P_VALUE_TESTS,
+    apply_family_correction,
+)
 from src.statistics_support import benjamini_hochberg
 
 
@@ -488,23 +508,20 @@ def test_family_alpha_is_the_cut_off_the_detectors_use():
     assert FAMILY_ALPHA == 0.05
 
 
-def test_the_default_threshold_is_unreachable():
+def test_the_default_threshold_is_reachable():
     """
-    Pins a KNOWN DEFECT, so nobody has to rediscover it.
+    REGRESSION GUARD. The default threshold must be able to fire.
 
-    Each day is scored against a rolling window that includes itself, so the
-    z-score is algebraically bounded: for k values the largest possible
-    |x - mean| / sd is (k - 1) / sqrt(k), and for k = 7 that is 2.2678. The
-    default z_threshold is 2.5, above the bound, so no dataset can produce an
-    anomaly at the default setting. This test asserts the current (broken)
-    behaviour deliberately -- see detect_anomalies.__doc__ for the fix and why
-    it is a separate change.
+    For most of this repo's life it could not: each day was scored against a
+    rolling window that *included itself*, which bounds the score at
+    (k - 1) / sqrt(k) = 2.268 for k = 7, below the then-default of 2.5. The
+    detector returned zero anomalies for every possible dataset. If anyone ever
+    puts the day back into its own reference window, or raises the default above
+    the bound, this test fails.
     """
-    bound = 6 / np.sqrt(7)
-    assert bound < 2.5  # 2.2678: the reason nothing can ever be flagged
-
-    # One astronomically large day among ordinary ones: still not flagged.
-    revenue = [100.0] * 20 + [1e12] + [100.0] * 9
+    rng = np.random.default_rng(7)
+    revenue = list(100.0 + rng.normal(0, 5.0, 30))
+    revenue[20] = 1000.0          # one unmistakable spike, with a full week before it
     df = pd.DataFrame({
         "date": pd.date_range("2026-04-01", periods=30),
         "hour": [12] * 30, "day_of_week": [0] * 30,
@@ -512,8 +529,29 @@ def test_the_default_threshold_is_unreachable():
         "quantity": [1] * 30, "unit_price": [2.5] * 30, "revenue": revenue,
     })
 
-    assert detect_anomalies(df)["anomaly_count"] == 0            # the default: never fires
-    assert detect_anomalies(df, z_threshold=2.0)["anomaly_count"] > 0  # below the bound: works
+    result = detect_anomalies(df)                       # the shipped default
+    assert result["anomaly_count"] >= 1
+    assert "2026-04-21" in result["anomalous_dates"]    # the spike, index 20
+    assert result["detected"] is True
+
+
+def test_why_the_day_is_excluded_from_its_own_window():
+    """
+    The algebra that made the old self-inclusive window unable to fire, kept as
+    a guard against anyone 'simplifying' the shift(1) away.
+
+    A value inside the sample it is measured against has a bounded standardised
+    deviation: |x - mean| / sd <= (k - 1) / sqrt(k). No spike, however large,
+    can exceed it. The shipped default must stay above that bound so the
+    self-inclusive formula could never satisfy it.
+    """
+    for k in range(2, 8):
+        spike = np.array([1.0] * (k - 1) + [1e12])      # as extreme as floats allow
+        self_inclusive_z = abs(spike[-1] - spike.mean()) / spike.std(ddof=1)
+        assert self_inclusive_z == pytest.approx((k - 1) / np.sqrt(k))
+
+    assert (ANOMALY_WINDOW - 1) / np.sqrt(ANOMALY_WINDOW) == pytest.approx(2.2678, abs=1e-4)
+    assert DEFAULT_Z_THRESHOLD > (ANOMALY_WINDOW - 1) / np.sqrt(ANOMALY_WINDOW)
 
 
 # ---------------------------------------------------------------------------
@@ -695,3 +733,136 @@ def test_ragged_opening_hours_do_not_emit_a_wall_of_warnings():
 
     assert [w for w in caught if "empty slice" in str(w.message)] == []
     assert result["sample_size"] == 4 and result["days_excluded"] == 0
+
+
+def _daily(revenue, start="2026-04-01"):
+    n = len(revenue)
+    return pd.DataFrame({
+        "date": pd.date_range(start, periods=n),
+        "hour": [12] * n, "day_of_week": [0] * n,
+        "category": ["Coffee"] * n, "product": ["Espresso"] * n,
+        "quantity": [1] * n, "unit_price": [2.5] * n, "revenue": revenue,
+    })
+
+
+def test_a_day_is_scored_against_the_week_before_it_only():
+    """
+    The shift: the reference window must hold the 7 days BEFORE the day, and
+    never the day itself. Checked by computing the expected z by hand.
+    """
+    rng = np.random.default_rng(5)
+    revenue = list(100.0 + rng.normal(0, 5.0, 20))
+    revenue[15] = 500.0
+    df = _daily(revenue)
+
+    result = detect_anomalies(df)
+    prior_week = np.array(revenue[8:15])          # the 7 days before index 15
+    expected_z = (revenue[15] - prior_week.mean()) / prior_week.std(ddof=1)
+
+    assert abs(expected_z) > DEFAULT_Z_THRESHOLD
+    assert "2026-04-16" in result["anomalous_dates"]   # index 15
+    # The spike is NOT in its own reference window, so it cannot damp its own score.
+    assert expected_z > (ANOMALY_WINDOW - 1) / np.sqrt(ANOMALY_WINDOW)
+
+
+def test_the_first_seven_days_are_reported_as_unscanned_not_as_clean():
+    rng = np.random.default_rng(6)
+    df = _daily(list(100.0 + rng.normal(0, 5.0, 40)))
+
+    result = detect_anomalies(df)
+    assert result["sample_size"] == 40
+    assert result["days_scanned"] == 40 - ANOMALY_WINDOW
+    assert result["days_unscored"] == ANOMALY_WINDOW
+    assert result["days_unscored_early"] == ANOMALY_WINDOW
+    assert result["days_unscored_flat"] == 0
+    assert "7 of 40 days were not scanned" in result["unscored_note"]
+    assert "no full week of sales before them" in result["unscored_note"]
+
+
+def test_a_flat_reference_week_makes_a_day_unscorable_not_infinitely_odd():
+    """
+    The 1e-8 fudge is gone. Seven identical days then a different one used to
+    divide by 1e-8 and flag the day as astronomically anomalous; with no
+    variation in the reference week there is no scale, so the day is unscored.
+    """
+    # Ten identical days, then a 50% jump. Every day with a reference window
+    # here has a flat one, so nothing can be scored.
+    df = _daily([100.0] * 10 + [150.0])
+
+    result = detect_anomalies(df)
+    assert result["anomaly_count"] == 0
+    assert result["anomalous_dates"] == []
+    assert result["days_scanned"] == 0
+    assert result["days_unscored_flat"] == len(df) - ANOMALY_WINDOW
+    assert "identical revenue every day" in result["unscored_note"]
+    assert "no scale to measure against" in result["unscored_note"]
+
+    # Not an anomaly at ANY threshold, because there is no scale at all.
+    assert detect_anomalies(df, z_threshold=0.5)["anomaly_count"] == 0
+
+    # What the old `rolling_std + 1e-8` denominator did with the same day: a
+    # z-score of around 5e9, i.e. an automatic anomaly on a penny of movement.
+    prior_week = np.array([100.0] * 7)
+    old_style_z = (150.0 - prior_week.mean()) / (prior_week.std(ddof=1) + 1e-8)
+    assert old_style_z > 1e9
+
+    # Once the reference week has any real variation, scoring resumes.
+    rng = np.random.default_rng(12)
+    varied = _daily(list(100.0 + rng.normal(0, 5.0, 10)) + [150.0])
+    assert detect_anomalies(varied)["days_scanned"] == 4
+
+
+def test_the_ratio_and_mean_z_use_the_scanned_days_as_the_denominator():
+    rng = np.random.default_rng(8)
+    revenue = list(100.0 + rng.normal(0, 5.0, 20))
+    revenue[14] = 600.0
+    result = detect_anomalies(_daily(revenue))
+
+    assert result["days_scanned"] == 13
+    assert result["anomaly_ratio"] == pytest.approx(result["anomaly_count"] / 13)
+    assert result["mean_z_score"] > 0
+
+
+def test_a_file_too_short_to_scan_says_so():
+    for n in (1, 5, 7):
+        result = detect_anomalies(_daily([100.0 + i for i in range(n)]))
+        assert result["sample_size"] == n
+        assert result["days_scanned"] == 0
+        assert result["detected"] is False
+        assert f"at least {ANOMALY_MIN_DAYS} days" in result["unscored_note"]
+
+    # Eight days is the minimum that can scan anything: exactly one day.
+    rng = np.random.default_rng(9)
+    assert detect_anomalies(_daily(list(100.0 + rng.normal(0, 5.0, 8))))["days_scanned"] == 1
+
+
+def test_the_threshold_default_and_its_rate_are_reported_together():
+    from src.statistics_support import expected_false_flag_rate
+
+    rng = np.random.default_rng(10)
+    result = detect_anomalies(_daily(list(100.0 + rng.normal(0, 5.0, 30))))
+    assert result["expected_false_flag_rate"] == pytest.approx(
+        expected_false_flag_rate(DEFAULT_Z_THRESHOLD, ANOMALY_WINDOW)
+    )
+    # A passed threshold is reflected in the reported rate, not just the count.
+    looser = detect_anomalies(_daily(list(100.0 + rng.normal(0, 5.0, 30))), z_threshold=2.5)
+    assert looser["expected_false_flag_rate"] > result["expected_false_flag_rate"]
+
+
+def test_the_sample_data_now_surfaces_two_anomalies():
+    """
+    Pins the newly visible finding on the shipped sample, which reported nothing
+    for the whole life of the repo because the threshold was unreachable.
+
+    2026-05-02 is the day the generator's planted 6-day dip (offsets 25-30, at
+    0.7x) ends: its reference week is depressed, it is not, hence z = +5.9.
+    2026-06-14 (z = +4.9) is a genuine excursion -- and over 85 scanned days at
+    ~0.96% a false flag is expected about 0.8 times, so one of the two could be
+    noise. That is what expected_false_flag_rate is in the output for.
+    """
+    from src.data_loader import load_sales_data
+
+    result = detect_anomalies(load_sales_data("data/sample_sales.csv"))
+    assert result["anomalous_dates"] == ["2026-05-02", "2026-06-14"]
+    assert result["days_scanned"] == 85 and result["days_unscored"] == 7
+    assert result["detected"] is True

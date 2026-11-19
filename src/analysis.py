@@ -37,12 +37,23 @@ from src.statistics_support import (
     bootstrap_ci,
     correct_family,
     dip_effect_size,
+    expected_false_flag_rate,
     resample_indices,
     weekday_adjusted_trend,
 )
 
 # Detectors that produce a p-value, and so take part in the BH correction.
 P_VALUE_TESTS: Tuple[str, ...] = ("afternoon_dip", "trend")
+
+# The anomaly scan compares each day against the ANOMALY_WINDOW days before it,
+# and needs all of them, so the earliest ANOMALY_WINDOW days cannot be scanned
+# and a dataset shorter than ANOMALY_MIN_DAYS cannot be scanned at all.
+ANOMALY_WINDOW: int = 7
+ANOMALY_MIN_DAYS: int = ANOMALY_WINDOW + 1
+# 4.0 flags about 0.96% of ordinary days — roughly one in 104. See
+# detect_anomalies.__doc__ for the derivation and for why the previous 2.5 was
+# not defensible once the threshold became reachable at all.
+DEFAULT_Z_THRESHOLD: float = 4.0
 
 
 def _clean_p(p_value: Any) -> float:
@@ -359,80 +370,181 @@ def detect_trend(df: pd.DataFrame) -> Dict[str, Any]:
     }
 
 
-def detect_anomalies(df: pd.DataFrame, z_threshold: float = 2.5) -> Dict[str, Any]:
+def detect_anomalies(df: pd.DataFrame, z_threshold: float = DEFAULT_Z_THRESHOLD) -> Dict[str, Any]:
     """
-    Detect anomalous days using Z-score (deviation from rolling mean).
+    Detect anomalous days: days far from the revenue of the week *before* them.
 
-    A day is anomalous if |z_score| > z_threshold, where the z-score is against
-    the mean and standard deviation of the 7-day window ending on that day
-    (``min_periods=1``, so the earliest days are scored against a short window
-    that includes themselves and are correspondingly hard to flag).
+    A day is anomalous if ``|z| > z_threshold``, where ``z`` is the day's revenue
+    measured against the mean and standard deviation of the
+    ``ANOMALY_WINDOW`` (7) days immediately preceding it. The day itself is not
+    in its own reference window.
+
+    WHY THE DAY IS EXCLUDED FROM ITS OWN WINDOW
+    -------------------------------------------
+    It used to be included (a trailing ``rolling(7, min_periods=1)``), and that
+    made the detector incapable of firing. When a value sits inside the sample it
+    is measured against, its standardised deviation is algebraically bounded: for
+    ``k`` values the largest possible ``|x - mean| / sd`` is ``(k - 1) / sqrt(k)``,
+    which for ``k = 7`` is 2.268. The default threshold was 2.5, above that bound,
+    so **no dataset could produce an anomaly** — a single day of a billion pounds
+    among days of one pound still scored 2.268. ``src/answers.py`` had always told
+    the reader this function used "the average of the 7 days up to it", which is
+    the behaviour implemented here; the self-inclusive window was a bug, not a
+    deliberately conservative choice.
+
+    WHY THE FIRST SEVEN DAYS ARE NOT SCANNED
+    ----------------------------------------
+    ``min_periods`` is the full window: a day is scored only if all 7 preceding
+    days are present. A shorter window would be worse than it looks. The standard
+    deviation of a 1-day window is undefined, a 2-day window gives an estimate on
+    one degree of freedom, and — the deciding reason — a threshold only means one
+    thing if every day is judged against the same amount of evidence. With a
+    variable window the same ``z_threshold`` would imply a different false-flag
+    rate on every day, and the number on screen would not be interpretable. So
+    the first 7 days are reported as unscanned rather than scanned leniently, and
+    ``days_unscored`` and ``unscored_note`` say so: a reader can see that the
+    early days were not examined instead of inferring that they were clean.
+
+    WHAT THE THRESHOLD MEANS, AND WHY THE DEFAULT IS 4.0
+    ----------------------------------------------------
+    Because the day is now outside its reference window, ``z`` is no longer
+    bounded — but neither is it a standard normal deviate. If daily revenue were
+    normal and independent, ``x - mean_7`` has variance ``sigma^2 (1 + 1/7)``
+    while ``sd_7`` estimates ``sigma`` on 6 degrees of freedom, so
+
+        z  ~  t(6) * sqrt(8 / 7)
+
+    whose tails are far fatter than a normal's. The old default of 2.5 would flag
+    **5.8% of perfectly ordinary days** — about one day in 17, or five false flags
+    in a 92-day period — not the ~1.2% that reading "2.5 standard deviations" as
+    a normal deviate suggests. A list of "unusual days" that long is noise, so the
+    default is now 4.0, which flags about **0.96% of ordinary days, one in 104**.
+    The rate implied by whatever threshold is passed is returned in
+    ``expected_false_flag_rate`` so the number is auditable rather than folklore;
+    it is a nominal rate resting on the normality and independence assumptions
+    above, which real café revenue only roughly satisfies, so treat it as an
+    order of magnitude and not a guarantee.
+
+    A FLAT REFERENCE WEEK MAKES A DAY UNSCORABLE
+    --------------------------------------------
+    If the 7 preceding days have identical revenue, their standard deviation is
+    exactly zero and there is no scale against which to judge today. The previous
+    code divided by ``sd + 1e-8``, which turned any deviation at all — a penny —
+    into an astronomical z-score and an automatic anomaly. That fudge is gone: a
+    day whose reference week shows no variation is counted in ``days_unscored``,
+    because "the week before gave me no way to measure this" is the honest
+    answer, not "this is infinitely unusual".
 
     This is a thresholding rule, not a hypothesis test: it yields no p-value and
     therefore takes no part in the family-wise correction applied in
     ``analyze_all()``, and the insight built from it is scored without a
     significance component (see ``src/confidence.py``).
 
-    KNOWN DEFECT: THE DEFAULT THRESHOLD CANNOT BE REACHED
-    -----------------------------------------------------
-    Because each day is scored against a window that **includes itself**, the
-    z-score is algebraically bounded. For a sample of ``k`` values the largest
-    possible ``|x_i - mean| / sd`` is ``(k - 1) / sqrt(k)``; with a 7-day window
-    that is ``6 / sqrt(7) = 2.268``. The default ``z_threshold`` of 2.5 is above
-    that bound, so **this function returns zero anomalies for every possible
-    dataset at its default setting** — a single day of a billion pounds against
-    neighbours of one pound still scores 2.268. Verified in
-    ``tests/test_analysis.py::test_the_default_threshold_is_unreachable``.
-
-    The fix is to score each day against the window *before* it (a ``shift(1)``,
-    which is also what ``src/answers.py`` already tells the reader it does:
-    "the 7 days up to it"), and only then to revisit the threshold. That changes
-    which days the dashboard reports, so it is deliberately left to its own
-    change rather than bundled here. Until then, a caller wanting this detector
-    to do anything must pass an explicit ``z_threshold`` below 2.268.
-
     Args:
         df: Sales data with 'date' and 'revenue' columns.
-        z_threshold: Z-score threshold for flagging anomalies.
+        z_threshold: Z-score threshold for flagging anomalies. See above for what
+            a given value implies about the false-flag rate.
 
     Returns:
         Dict with keys:
         - detected: bool, True if anomalies found
         - anomaly_count: number of anomalous days
-        - anomaly_ratio: fraction of days that are anomalous
-        - mean_z_score: average absolute z-score
-        - sample_size: number of days
+        - anomaly_ratio: anomalous days as a fraction of the days *scanned*
+        - mean_z_score: average absolute z-score over the days scanned
+        - sample_size: number of days in the data
+        - days_scanned: days that could be scored (sample_size - days_unscored)
+        - days_unscored: days that could not be scored at all
+        - days_unscored_early: of those, how many lacked a full week before them
+        - days_unscored_flat: of those, how many had a reference week with no
+          variation to measure against
+        - unscored_note: a sentence naming how many days were not scanned and
+          why, or "" when every day was scanned
+        - expected_false_flag_rate: the share of ordinary days this threshold
+          would flag under the assumptions above
         - anomalous_dates: list of anomalous dates
     """
     daily = df.groupby("date")["revenue"].sum().reset_index()
-    if len(daily) < 7:
+    total_days = len(daily)
+    false_flag_rate = expected_false_flag_rate(z_threshold, ANOMALY_WINDOW)
+
+    if total_days < ANOMALY_MIN_DAYS:
         return {
             "detected": False,
             "anomaly_count": 0,
             "anomaly_ratio": 0.0,
             "mean_z_score": 0.0,
-            "sample_size": len(daily),
+            "sample_size": total_days,
+            "days_scanned": 0,
+            "days_unscored": total_days,
+            "days_unscored_early": total_days,
+            "days_unscored_flat": 0,
+            "unscored_note": (
+                f"No day could be scanned: each one needs the {ANOMALY_WINDOW} days before it, "
+                f"so at least {ANOMALY_MIN_DAYS} days of sales are required and this data has "
+                f"{total_days}."
+            ),
+            "expected_false_flag_rate": false_flag_rate,
             "anomalous_dates": [],
         }
 
-    rolling_mean = daily["revenue"].rolling(window=7, min_periods=1).mean()
-    rolling_std = daily["revenue"].rolling(window=7, min_periods=1).std()
+    revenue = daily["revenue"]
+    # shift(1) first, so the window holds the ANOMALY_WINDOW days BEFORE each day
+    # and never the day itself.
+    prior = revenue.shift(1)
+    window = prior.rolling(window=ANOMALY_WINDOW, min_periods=ANOMALY_WINDOW)
+    reference_mean = window.mean()
+    reference_std = window.std()
 
-    z_scores = (daily["revenue"] - rolling_mean) / (rolling_std + 1e-8)
-    is_anomalous = np.abs(z_scores) > z_threshold
+    has_window = reference_mean.notna() & reference_std.notna()
+    flat_window = has_window & (reference_std <= 0)
+    scorable = has_window & (reference_std > 0)
 
-    anomaly_count = is_anomalous.sum()
-    anomaly_ratio = anomaly_count / len(daily)
+    z_scores = pd.Series(np.nan, index=daily.index, dtype=float)
+    z_scores[scorable] = (
+        (revenue[scorable] - reference_mean[scorable]) / reference_std[scorable]
+    )
 
-    anomalous_dates = daily.loc[is_anomalous, "date"].dt.strftime("%Y-%m-%d").tolist()
+    is_anomalous = scorable & (z_scores.abs() > z_threshold)
+    anomaly_count = int(is_anomalous.sum())
+
+    days_scanned = int(scorable.sum())
+    days_unscored_early = int((~has_window).sum())
+    days_unscored_flat = int(flat_window.sum())
+    days_unscored = days_unscored_early + days_unscored_flat
+
+    reasons = []
+    if days_unscored_early:
+        reasons.append(
+            f"{days_unscored_early} had no full week of sales before them"
+        )
+    if days_unscored_flat:
+        reasons.append(
+            f"{days_unscored_flat} had a reference week with identical revenue every day, "
+            f"leaving no scale to measure against"
+        )
+    unscored_note = (
+        ""
+        if days_unscored == 0
+        else (
+            f"{days_unscored} of {total_days} days were not scanned: "
+            + "; ".join(reasons)
+            + "."
+        )
+    )
 
     return {
         "detected": anomaly_count > 0,
-        "anomaly_count": int(anomaly_count),
-        "anomaly_ratio": float(anomaly_ratio),
-        "mean_z_score": float(np.abs(z_scores).mean()),
-        "sample_size": len(daily),
-        "anomalous_dates": anomalous_dates,
+        "anomaly_count": anomaly_count,
+        "anomaly_ratio": float(anomaly_count / days_scanned) if days_scanned else 0.0,
+        "mean_z_score": float(z_scores.abs().mean()) if days_scanned else 0.0,
+        "sample_size": total_days,
+        "days_scanned": days_scanned,
+        "days_unscored": days_unscored,
+        "days_unscored_early": days_unscored_early,
+        "days_unscored_flat": days_unscored_flat,
+        "unscored_note": unscored_note,
+        "expected_false_flag_rate": false_flag_rate,
+        "anomalous_dates": daily.loc[is_anomalous, "date"].dt.strftime("%Y-%m-%d").tolist(),
     }
 
 

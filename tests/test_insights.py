@@ -340,28 +340,32 @@ class TestAnomalyInsightsCarryNoFabricatedSignificance:
 
     @staticmethod
     def _anomaly_analysis():
-        """30 days with two outliers, scanned at a threshold the rule can reach."""
-        from src.analysis import analyze_all, detect_anomalies
+        """30 days with two planted outliers, scannable at the shipped default.
 
-        rows = []
-        for day in range(1, 31):
-            revenue = 100.0
-            if day == 12:
-                revenue = 5.0
-            if day == 24:
-                revenue = 400.0
-            rows.append({
-                "date": pd.Timestamp(f"2026-04-{day:02d}"), "hour": 12,
-                "day_of_week": 0, "category": "Coffee", "product": "Espresso",
-                "quantity": 1, "unit_price": 2.5, "revenue": revenue,
-            })
-        df = pd.DataFrame(rows)
-        analysis = analyze_all(df)
-        # The default z_threshold of 2.5 is unreachable (see
-        # test_analysis.test_the_default_threshold_is_unreachable), so the scan
-        # is re-run at 2.0 to get a dataset that actually has anomalies.
-        analysis["anomalies"] = detect_anomalies(df, z_threshold=2.0)
-        return analysis
+        The baseline carries seeded noise on purpose: a flat baseline gives every
+        reference week a standard deviation of zero, which makes every day
+        unscannable rather than making every deviation infinite.
+        """
+        import numpy as np
+
+        from src.analysis import analyze_all
+
+        rng = np.random.default_rng(99)
+        revenue = list(100.0 + rng.normal(0, 5.0, 30))
+        revenue[11] = 5.0       # a near-closure
+        revenue[23] = 400.0     # a bumper day
+        df = pd.DataFrame({
+            "date": pd.date_range("2026-04-01", periods=30),
+            "hour": [12] * 30, "day_of_week": [0] * 30,
+            "category": ["Coffee"] * 30, "product": ["Espresso"] * 30,
+            "quantity": [1] * 30, "unit_price": [2.5] * 30, "revenue": revenue,
+        })
+        return analyze_all(df)
+
+    def test_the_two_planted_outliers_are_the_ones_found(self):
+        analysis = self._anomaly_analysis()
+        assert analysis["anomalies"]["anomalous_dates"] == ["2026-04-12", "2026-04-24"]
+        assert analysis["anomalies"]["days_scanned"] == 23   # first 7 have no week before them
 
     def test_the_evidence_records_no_p_value(self):
         analysis = self._anomaly_analysis()
@@ -371,9 +375,21 @@ class TestAnomalyInsightsCarryNoFabricatedSignificance:
         assert insights[0].evidence["p_value"] is None   # was hard-coded 0.001
 
     def test_the_score_drops_by_the_fabricated_points(self):
+        """
+        2 flagged days of 30, mean |z| 5.4816.
+
+        Before: 25.00 + 2.33 + 25.00 + 14.98 (fabricated) = 67
+        After:  29.41 + 2.75 + 29.41                      = 62
+        """
+        from src.confidence import compute_confidence
+
         analysis = self._anomaly_analysis()
         insight = generate_anomaly_insights(analysis, 30)[0]
-        assert insight.confidence_score == 34            # was 44
+        assert insight.confidence_score == 62
+
+        # What the same evidence would have scored with the invented p-value.
+        fabricated = dict(insight.evidence, p_value=0.001)
+        assert compute_confidence(**fabricated) == 67
 
     def test_the_itemised_receipt_shows_three_parts_not_four(self):
         from src.confidence import confidence_breakdown

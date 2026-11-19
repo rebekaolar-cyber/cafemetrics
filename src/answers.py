@@ -8,7 +8,7 @@ data shows: a dip, a trend or outlier days are reported when the rules find them
 import inspect
 from typing import Any, Dict, List, NamedTuple
 
-from src.analysis import detect_anomalies
+from src.analysis import ANOMALY_MIN_DAYS, ANOMALY_WINDOW, detect_anomalies
 from src.statistics_support import FAMILY_ALPHA, format_interval
 
 # The cut-offs the rules use, read from where they are defined so the text can't drift.
@@ -146,25 +146,44 @@ def trend_answer(trend: Dict[str, Any]) -> Answer:
 def anomaly_answer(anomalies: Dict[str, Any]) -> Answer:
     """Did any day stand out? From detect_anomalies()."""
     days, count = anomalies["sample_size"], anomalies["anomaly_count"]
+    scanned = anomalies.get("days_scanned", days)
     rule = (
         f"A day stands out when its revenue is more than {Z_THRESHOLD:g} standard deviations "
-        "from the average of the 7 days up to it."
+        f"from the average of the {ANOMALY_WINDOW} days before it. That day is not counted in "
+        f"its own average, so the comparison is with the week leading up to it. On steady "
+        f"takings this rule flags about "
+        f"{anomalies.get('expected_false_flag_rate', 0.0):.1%} of ordinary days anyway, so "
+        f"expect roughly one false alarm every "
+        f"{round(1 / anomalies['expected_false_flag_rate']) if anomalies.get('expected_false_flag_rate') else 0} "
+        f"days."
     )
-    if days < 7:
+    note = anomalies.get("unscored_note", "")
+    if note:
+        rule = f"{rule} {note}"
+
+    if days < ANOMALY_MIN_DAYS:
         return Answer(
             "Not enough data to tell",
-            f"Spotting unusual days needs at least 7 days of sales; this data has {days}.",
+            f"Spotting unusual days needs at least {ANOMALY_MIN_DAYS} days of sales, because "
+            f"each day is compared with the {ANOMALY_WINDOW} before it; this data has {days}.",
+            rule,
+        )
+    if scanned == 0:
+        return Answer(
+            "Not enough data to tell",
+            f"None of the {days} days could be checked: {note or 'no day had a usable week before it.'}",
             rule,
         )
     if count == 0:
         return Answer(
             "No day stands out",
-            f"None of the {days} days is far enough from its recent average to count as unusual.",
+            f"None of the {scanned} days checked is far enough from the week before it to count "
+            f"as unusual.",
             rule,
         )
     dates = ", ".join(anomalies["anomalous_dates"])
     return Answer(
-        f"{count} of {days} days stand{'s' if count == 1 else ''} out",
+        f"{count} of {scanned} days stand{'s' if count == 1 else ''} out",
         f"Unusually high or low revenue on: {dates}. Check what happened on those dates "
         "(an event, the weather, staffing, a promotion).",
         rule,

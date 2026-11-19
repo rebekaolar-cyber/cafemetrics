@@ -19,6 +19,7 @@ from src.statistics_support import (
     bootstrap_ci,
     correct_family,
     dip_effect_size,
+    expected_false_flag_rate,
     format_interval,
     resample_indices,
     weekday_adjusted_trend,
@@ -390,3 +391,69 @@ def test_dip_effect_size_is_zero_when_there_is_no_spread_to_divide_by():
 
 def test_family_alpha_is_the_conventional_cut_off():
     assert FAMILY_ALPHA == 0.05
+
+
+# --------------------------------------------------------------------------
+# What a rolling-window z-threshold actually implies
+# --------------------------------------------------------------------------
+
+def test_the_false_flag_rate_matches_the_t_distribution():
+    """
+    A day scored against the `window` days before it is not a normal deviate.
+    x - mean(window) has variance sigma^2 (1 + 1/window) while the window's sd
+    estimates sigma on window-1 df, so z ~ t(window-1) * sqrt((window+1)/window).
+    Checked against scipy directly for window = 7.
+    """
+    scale = np.sqrt(8 / 7)
+    for threshold in (2.0, 2.5, 3.0, 4.0, 5.0):
+        expected = 2 * stats.t.sf(threshold / scale, 6)
+        assert expected_false_flag_rate(threshold, 7) == pytest.approx(expected)
+
+
+def test_the_false_flag_rate_matches_simulation():
+    """
+    The formula is not just algebra on paper: simulate the rule on normal data
+    and count. Seeded, so deterministic.
+    """
+    rng = np.random.default_rng(42)
+    n = 60000
+    day = rng.normal(0, 1, n)
+    window = rng.normal(0, 1, (n, 7))
+    z = (day - window.mean(axis=1)) / window.std(axis=1, ddof=1)
+
+    for threshold in (2.5, 4.0):
+        simulated = float(np.mean(np.abs(z) > threshold))
+        assert simulated == pytest.approx(expected_false_flag_rate(threshold, 7), abs=0.004)
+
+
+def test_the_old_default_flagged_one_ordinary_day_in_seventeen():
+    """
+    Why 2.5 was not defensible once it became reachable: the fat t tails make it
+    roughly five times more permissive than reading '2.5 standard deviations' as
+    a normal deviate suggests. Over 85 scanned days it expects ~4.9 false flags.
+    """
+    assert expected_false_flag_rate(2.5, 7) == pytest.approx(0.0580, abs=0.0005)
+    assert 1 / expected_false_flag_rate(2.5, 7) == pytest.approx(17.3, abs=0.2)
+    # The normal approximation someone might reach for instead:
+    assert 2 * stats.norm.sf(2.5) == pytest.approx(0.0124, abs=0.0005)
+
+
+def test_the_new_default_flags_about_one_ordinary_day_in_a_hundred():
+    from src.analysis import ANOMALY_WINDOW, DEFAULT_Z_THRESHOLD
+
+    rate = expected_false_flag_rate(DEFAULT_Z_THRESHOLD, ANOMALY_WINDOW)
+    assert rate == pytest.approx(0.0096, abs=0.0005)
+    assert 1 / rate == pytest.approx(104, abs=2)
+
+
+def test_a_higher_threshold_always_flags_fewer_and_a_wider_window_is_stricter():
+    rates = [expected_false_flag_rate(t, 7) for t in (2.0, 3.0, 4.0, 5.0)]
+    assert rates == sorted(rates, reverse=True)
+    # More prior days means more df, thinner tails, fewer false flags.
+    assert expected_false_flag_rate(4.0, 28) < expected_false_flag_rate(4.0, 7)
+
+
+def test_the_false_flag_rate_handles_degenerate_arguments():
+    assert expected_false_flag_rate(4.0, 1) == 0.0     # sd has no degrees of freedom
+    assert expected_false_flag_rate(0.0, 7) == 1.0     # everything is an anomaly
+    assert expected_false_flag_rate(-1.0, 7) == 1.0
