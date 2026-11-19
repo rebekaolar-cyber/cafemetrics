@@ -296,3 +296,82 @@ class TestConfidenceBreakdown:
 
         with pytest.raises(ValueError):
             confidence_breakdown(sample_size=0, consistency_ratio=0.5, effect_size=0.5, p_value=0.5)
+
+
+class TestFindingsWithNoTestBehindThem:
+    """p_value=None: the Significance part is dropped, the rest rescaled to 100.
+
+    The anomaly scan performs no hypothesis test. It used to be handed a
+    hard-coded p_value of 0.001 whenever any day was flagged, which bought it
+    all 15 significance points on no evidence at all.
+    """
+
+    def test_the_three_remaining_weights_still_total_one_hundred(self):
+        from src.confidence import active_weights
+
+        full = active_weights(tested=True)
+        assert sum(full.values()) == pytest.approx(1.0)
+        assert full == {"Sample size": 0.25, "Consistency": 0.35,
+                        "Effect size": 0.25, "Significance": 0.15}
+
+        rescaled = active_weights(tested=False)
+        assert "Significance" not in rescaled
+        assert sum(rescaled.values()) == pytest.approx(1.0)
+        # 0.25/0.85, 0.35/0.85, 0.25/0.85
+        assert rescaled["Sample size"] == pytest.approx(0.25 / 0.85)
+        assert rescaled["Consistency"] == pytest.approx(0.35 / 0.85)
+        assert rescaled["Effect size"] == pytest.approx(0.25 / 0.85)
+
+    def test_the_breakdown_has_three_rows_and_no_significance_row(self):
+        from src.confidence import confidence_breakdown
+
+        parts = confidence_breakdown(sample_size=30, consistency_ratio=0.5,
+                                     effect_size=0.4, p_value=None)
+        assert [part["name"] for part in parts] == ["Sample size", "Consistency", "Effect size"]
+        assert sum(part["max_points"] for part in parts) == pytest.approx(100.0)
+
+    def test_a_perfect_untested_finding_can_still_reach_one_hundred(self):
+        """Rescaling, not capping: the 0-100 scale keeps meaning the same thing."""
+        from src.confidence import compute_confidence
+
+        assert compute_confidence(sample_size=100, consistency_ratio=1.0,
+                                  effect_size=2.0, p_value=None) == 100
+
+    def test_no_test_is_not_the_same_claim_as_a_failed_test(self):
+        """
+        p_value=None must not be treated as p = 1.0. A failed test scores zero
+        for significance out of 15; no test at all removes the category.
+        """
+        from src.confidence import compute_confidence
+
+        untested = compute_confidence(30, 0.5, 0.4, p_value=None)
+        failed_test = compute_confidence(30, 0.5, 0.4, p_value=1.0)
+        assert untested > failed_test
+
+    def test_the_parts_still_sum_to_the_score_without_a_p_value(self):
+        from src.confidence import compute_confidence, confidence_breakdown
+
+        inputs = dict(sample_size=47, consistency_ratio=0.3, effect_size=0.9, p_value=None)
+        parts = confidence_breakdown(**inputs)
+        assert round(sum(part["points"] for part in parts)) == compute_confidence(**inputs)
+
+    def test_the_anomaly_score_before_and_after_dropping_the_fake_p_value(self):
+        """
+        Pins the one number this change moves, on a dataset that has anomalies:
+        2 flagged days out of 30, mean |z| 0.3128.
+
+        Before: 25.00 + 2.33 + 1.88 + 14.98 (fabricated) = 44
+        After:  29.41 + 2.75 + 2.21                      = 34
+        """
+        from src.confidence import compute_confidence
+
+        evidence = {"sample_size": 30, "consistency_ratio": 2 / 30,
+                    "effect_size": 0.31276 * 0.3}
+        assert compute_confidence(**evidence, p_value=0.001) == 44   # the old, fabricated score
+        assert compute_confidence(**evidence, p_value=None) == 34    # the honest one
+
+    def test_an_out_of_range_p_value_is_still_rejected(self):
+        from src.confidence import compute_confidence
+
+        with pytest.raises(ValueError):
+            compute_confidence(30, 0.5, 0.5, p_value=1.5)

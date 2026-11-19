@@ -64,9 +64,27 @@ def test_each_ticket_itemises_its_score(dashboard):
     assert dashboard.insights, "the sample data should produce at least one finding"
     for insight in dashboard.insights:
         printed = " ".join(texts(dashboard.receipt(insight)))
-        for part in ("Sample size", "Consistency", "Effect size", "Significance"):
+        for part in ("Sample size", "Consistency", "Effect size"):
             assert part in printed
+        # Significance is printed exactly when a real test stands behind the
+        # finding. The anomaly scan runs no test, so its ticket has three rows
+        # and the other three weights are rescaled to still total 100.
+        tested = insight.evidence.get("p_value") is not None
+        assert ("Significance" in printed) is tested
         assert f"{insight.confidence_score} of 100" in printed
+
+    # The biconditional above is derived from the same dict it checks, so on its
+    # own it would still pass if a bug made every insight untested. Pin which
+    # findings must carry a real p-value, so that cannot hide here.
+    by_type = {insight.pattern_type: insight for insight in dashboard.insights}
+    for pattern in ("afternoon_dip", "trend"):
+        if pattern in by_type:
+            p_value = by_type[pattern].evidence["p_value"]
+            assert isinstance(p_value, float) and 0 < p_value <= 1, (
+                f"{pattern} rests on a hypothesis test and must report its p-value"
+            )
+    if "anomalies" in by_type:
+        assert by_type["anomalies"].evidence["p_value"] is None
 
 
 def test_a_judged_finding_shows_a_stamp_instead_of_buttons(dashboard):

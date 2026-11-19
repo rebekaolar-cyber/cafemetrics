@@ -84,7 +84,11 @@ def generate_afternoon_dip_insight(
         "sample_size": dip["sample_size"],
         "consistency_ratio": dip["sample_size"] / calendar_days,
         "effect_size": dip["effect_size"],
-        "p_value": dip["p_value"],
+        # The family-corrected p-value, not the raw one: analyze_all() runs
+        # several tests on one dataset, so the raw value would overstate the
+        # significance this score is paying for. The raw value stays in the
+        # analysis dict and is shown beside it in src/answers.py.
+        "p_value": dip["p_value_corrected"],
     }
     score = compute_confidence(**evidence)
 
@@ -153,7 +157,7 @@ def generate_trend_insight(
         "sample_size": trend["sample_size"],
         "consistency_ratio": 1.0,  # Trend is continuous if detected
         "effect_size": abs(trend["slope_pct"]) / 10,  # Scale percentage to effect-like metric
-        "p_value": trend["p_value"],
+        "p_value": trend["p_value_corrected"],  # see the dip insight for why
     }
     score = compute_confidence(**evidence)
 
@@ -206,7 +210,13 @@ def generate_anomaly_insights(
         "sample_size": calendar_days,
         "consistency_ratio": anomalies["anomaly_count"] / calendar_days,
         "effect_size": anomalies["mean_z_score"] * 0.3,
-        "p_value": 0.001 if anomalies["anomaly_count"] > 0 else 1.0,
+        # No p-value: detect_anomalies() compares rolling z-scores against a
+        # threshold and performs no hypothesis test, so there is no significance
+        # to report. This used to be hard-coded to 0.001 whenever any day was
+        # flagged, which handed the finding all 15 significance points on no
+        # evidence whatever. None drops that component and rescales the other
+        # three to total 100; see src/confidence.py.
+        "p_value": None,
     }
     score = compute_confidence(**evidence)
 

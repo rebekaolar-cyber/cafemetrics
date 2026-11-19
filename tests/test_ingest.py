@@ -52,10 +52,13 @@ def canonical(rows=30, start_day=1):
 def full_days(days=30, hours=range(8, 20)):
     """A file with every open hour on every day.
 
-    Only a file this even survives src/analysis.py: the afternoon-dip rule runs a
-    paired t-test between the dip hours and the rest, and raises when some day has
-    sales in one of those windows and not the other. See
-    tests/test_upload_ui.py::test_a_file_the_statistics_cannot_cope_with_still_shows_its_totals.
+    A file this even used to be the only kind src/analysis.py survived: the
+    afternoon-dip rule ran a paired t-test between the dip hours and the rest,
+    and raised when some day had sales in one of those windows and not the
+    other. That is fixed — uneven files are analysed now, with the unpairable
+    days set aside and counted — so this builder is no longer a workaround, just
+    a convenient file with a dip planted in it. See
+    tests/test_upload_ui.py::test_a_file_with_uneven_opening_hours_is_analysed_not_apologised_for.
     """
     lines = [CANONICAL_HEADER]
     for day in range(1, days + 1):

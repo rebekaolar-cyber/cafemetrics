@@ -66,6 +66,12 @@ score = 0.25×size_score + 0.35×consistency_score + 0.25×effect_score + 0.15×
 - **effect_score**: min(100, effect_size × 80) — Cohen's d scale
 - **p_value_score**: (1 – p_value) × 100 if p < 0.05, else 0
 
+**Findings with no test behind them**: the unusual-day scan compares rolling z-scores against a
+threshold and performs no hypothesis test, so there is no p-value to score. Its findings are
+scored on the first three components, rescaled to still total 100
+(0.294 / 0.412 / 0.294) — not handed a nominal p-value, and not scored as though a test had run
+and failed. Those are three different claims and only one of them is true.
+
 **Bands**: HIGH (≥85), MEDIUM (60–84), LOW (<60)
 
 Every score includes a **basis** line: "6 weeks of data, consistent across 28/30 weekdays."
@@ -77,9 +83,14 @@ consistency and significance, but 3.5 of 25 for effect size, because the dip is 
 
 ### 2. Three Core Analyses
 
-- **Afternoon Dip**: Compares revenue in hours 14–16 to daily mean. Returns effect size, sample size, p-value → confidence.
-- **Trend**: Linear regression on daily revenue. Returns slope, p-value, R² → confidence.
-- **Anomalies**: Z-score detection of outlier days. Returns anomaly count, ratio, mean z-score → confidence.
+- **Afternoon Dip**: Paired t-test comparing revenue in hours 14–16 to every other open hour. Returns effect size with a bootstrap confidence interval, sample size, p-value → confidence.
+- **Trend**: Linear regression on daily revenue with the day-of-week effect removed first. Returns slope with a bootstrap confidence interval, p-value, partial R² → confidence.
+- **Anomalies**: Z-score detection of outlier days, each scored against the 7 days *before* it. Returns anomaly count, ratio, mean z-score, the days it could not scan, and the false-alarm rate the chosen threshold implies → confidence.
+
+The dip and trend tests share one dataset, so their p-values are corrected together
+(Benjamini–Hochberg) before anything is reported; the corrected value decides what is reported
+and feeds the confidence score, and the raw value stays on screen beside it. See
+[Why some patterns are not reported](#why-some-patterns-are-not-reported).
 
 ### 3. Rule-Based Insights, Not LLM
 
@@ -116,10 +127,99 @@ analysis of the loaded data (`src/answers.py`), so it can only say what the data
 - "Is revenue rising or falling?" → the slope, its p-value and R², or "no clear trend"
 - "Did any day stand out?" → the outlier dates, or "no day stands out", with the rule used
 
-When the rules find nothing, the answer says so and shows the numbers. On the sample data two of
-the three answers are "nothing found".
+When the rules find nothing, the answer says so and shows the numbers. On the sample data one of
+the three answers is "nothing found" — the trend — and see
+[Why some patterns are not reported](#why-some-patterns-are-not-reported) for why that is the
+honest answer rather than a missed finding.
 
 No free-form text box, no LLM API calls.
+
+## Why some patterns are not reported
+
+A dashboard that only ever finds things is not measuring anything. On the shipped sample data
+(92 days) the rules report **one** finding out of three, and the reasons are worth reading —
+they are the same reasons the numbers can be trusted when something *is* reported.
+
+**The trend that isn't: revenue looks like it's rising, and it is not reported.**
+Daily revenue drifts up by about £1.91 a day. But the range of drifts consistent with this data
+runs from **−£0.03 to £3.85 a day** (95% confidence) — it includes zero, so "no change at all"
+is still on the table. The formal test agrees: p = 0.054, just the wrong side of the 0.05 line
+the project reports at. Two steps got it there, and both are documented in `src/analysis.py`:
+
+- *The weekly pattern is removed first.* Saturdays take far more than Tuesdays, and a 92-day
+  window never holds equal numbers of each weekday. A plain line fitted through daily revenue
+  can therefore slope purely because of which weekdays the window begins and ends on. Taking the
+  day-of-week effect out first moved this p-value from **0.066 to 0.054** — the weekly rhythm was
+  slightly flattering the trend, not creating it.
+- *Three tests on one dataset means three chances to get lucky.* Run enough tests and one comes
+  back "significant" by accident. The Benjamini–Hochberg correction raises each p-value to
+  account for the others in the family, and the dashboard shows the raw and the corrected value
+  side by side.
+
+So the honest answer is: revenue may well be rising, but 92 days is not enough to tell it apart
+from an ordinary good run. The dashboard says exactly that, with the numbers.
+
+**The dip that is reported, but only at 79 out of 100.**
+Afternoons from 14:00 to 17:00 really are quieter: £78 in an average hour against £85 across the
+day, and the test is about as certain as tests get (p < 0.001 even after correction). What holds
+the score down is that **8% is a small difference**. The effect size is 0.18 (95% confidence
+0.12 to 0.23), which on the conventional scale is small — so that part of the score earns
+**3.5 points out of 25**, and the finding lands in the MEDIUM band rather than HIGH. Certain
+that it happens; not a big enough gap to justify a drastic change.
+
+**Two unusual days are reported — and neither one is the thing you might assume.**
+2 May and 14 June stand more than 4 standard deviations from the week before them.
+
+2 May is the *rebound* from the sample generator's planted six-day slump, not the slump. The
+slump runs 26 April to 1 May at 70% of normal takings; 2 May is the first day back at full
+level, and six of the seven days in its reference week are slump days, so the week behind it
+sits at £972 while the day itself takes £2052 — hence +5.9.
+
+**The slump itself is never flagged**, and that is worth saying out loud. Its deepest day,
+28 April, scores −3.45, under the threshold; the other five sit between −1.76 and +0.21, because
+each one's reference week already contains the days before it and sinks along with them. A
+gradual six-day level shift is close to invisible to a rule that compares each day with the week
+behind it — such a rule only ever sees a sharp edge, and here the sharp edge is on the way back
+up. So a reader seeing "2 May stands out" would *not* conclude "there was a six-day slump the
+week before". Detecting sustained shifts needs a changepoint test, which this repo does not have;
+it is a named limitation, not an oversight.
+
+14 June (+4.9) has no planted cause and may be nothing at all. Its reference week happened to be
+unusually tight — a standard deviation of £138 against a typical £257 — which makes the threshold
+easier to clear, and running the same rule on day-of-week-adjusted figures scores it +2.76, below
+the line. The rule flags about 0.96% of perfectly ordinary days by construction and 85 days were
+scanned, so **0.8 false alarms are expected per period**: 14 June is plausibly that one. Nothing
+in the data settles it. The dashboard prints that rate beside the finding rather than letting the
+reader assume a flagged day is real.
+
+**Seven days could not be checked at all.** Each day is compared with the seven days before it,
+so the first seven of any file have no week to be compared against. They are reported as
+unscanned rather than quietly counted as clean.
+
+**Why the threshold is 4 and not 2.5.** This check used to be broken in a way worth describing,
+because it shows what "transparent" has to mean in practice. Each day was scored against a
+7-day window that **included itself**, and a value inside its own sample has a bounded
+deviation: at most 6/√7 = 2.268. The threshold was 2.5. So on exact arithmetic the check could
+not fire on *any* data — a single day of a billion pounds still scored 2.268 — and the
+dashboard's confident "no day stands out" was an artefact, not a finding.
+
+In floating point it was worse than silent. A large enough day (around a quadrillion pounds, so
+not a café, but a corrupted export) wrecks the running sums pandas uses for a rolling standard
+deviation; afterwards it reports a standard deviation of exactly zero where the true figure is a
+few pounds, and never recovers. The old code divided by `sd + 1e-8`, which turned each following
+*ordinary* day into a score around 100 million. So the old rule's real behaviour was to miss the
+outlier and then flag a long run of normal days — 93 of them, in one measured case. Scoring each
+day against the week *before* it fixes the first half; refusing to score a week with no variation
+in it at all (above) fixes the second. On that same file the current code flags the spike, once.
+
+Making the check work also means the threshold finally means something, and 2.5 turned out to be the
+wrong number: with only seven prior days the standard deviation is itself a rough estimate, so
+the score follows a t-distribution with fat tails, and 2.5 would flag **one ordinary day in 17** —
+about five false alarms per 92 days. 4.0 flags about one in 104. At 2.5 this sample would list
+four days instead of two; the two extra are exactly what the false-alarm rate predicts.
+
+**The one number no statistics can supply.** A reported dip says the afternoons *are* quieter.
+It does not say why, and nothing in this repo pretends otherwise.
 
 ## Installation & Setup
 
@@ -224,17 +324,32 @@ basis = confidence_basis(30, 0.90, 92)
 Three detection functions, each returning raw stats for confidence scoring:
 
 ```python
-from src.analysis import detect_afternoon_dip, detect_trend, detect_anomalies
+from src.analysis import analyze_all, detect_afternoon_dip, detect_trend, detect_anomalies
 
 dip = detect_afternoon_dip(df)
-# Returns: sample_size, effect_size, p_value, dip_avg_revenue, overall_avg_revenue
+# Returns: sample_size, effect_size, effect_size_ci, p_value, p_value_corrected,
+#          family_size, dip_avg_revenue, overall_avg_revenue
 
 trend = detect_trend(df)
-# Returns: slope, p_value, r_squared, slope_pct
+# Returns: slope, slope_ci, slope_pct, p_value, p_value_corrected, family_size,
+#          r_squared, and the pre-adjustment fit as *_unadjusted
 
-anomalies = detect_anomalies(df, z_threshold=2.5)
-# Returns: anomaly_count, anomaly_ratio, anomalous_dates, mean_z_score
+anomalies = detect_anomalies(df, z_threshold=4.0)
+# Returns: anomaly_count, anomaly_ratio, anomalous_dates, mean_z_score,
+#          days_scanned, days_unscored, unscored_note, expected_false_flag_rate
+
+# analyze_all() runs all three and corrects the family's p-values together.
+# A detector called on its own is a family of one: p_value_corrected == p_value.
+analysis = analyze_all(df)
 ```
+
+### `src/statistics_support.py`
+
+The shared statistical machinery, kept out of `analysis.py` so each piece is testable alone:
+Benjamini–Hochberg correction, a seeded percentile bootstrap
+(seed `20260401`, 2000 resamples, 95% intervals — change the seed and every published
+interval changes), the weekday-adjusted trend fit, and `expected_false_flag_rate()`, which
+says what share of ordinary days a given z-threshold flags on a window of a given size.
 
 ### `src/insights.py`
 
@@ -276,7 +391,9 @@ Running `python data/generate_sample_data.py && python app/dashboard.py` generat
 
 ✓ No significant trend detected
 
-✓ No major anomalies detected
+✓ Sales Anomalies
+  Confidence: 37/100 (LOW)
+  Text: 2 anomalous days detected out of 92 (2.4%). Dates: 2026-05-02, 2026-06-14...
 ```
 
 ## Future Work
