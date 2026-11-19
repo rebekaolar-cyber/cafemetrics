@@ -1,5 +1,7 @@
 # CaféMetrics: Rule-Based Café Sales Analytics with Transparent Confidence Scoring
 
+[![tests](https://github.com/rebekaolar-cyber/cafemetrics/actions/workflows/tests.yml/badge.svg)](https://github.com/rebekaolar-cyber/cafemetrics/actions/workflows/tests.yml)
+
 A portfolio-quality analytics dashboard for café sales data that uses **rule-based statistical analysis** (no LLM) and **transparent confidence scoring** to generate auditable, actionable insights.
 
 ![CaféMetrics dashboard](docs/screenshot.png)
