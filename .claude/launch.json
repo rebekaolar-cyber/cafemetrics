@@ -4,7 +4,7 @@
     {
       "name": "cafemetrics-dashboard",
       "runtimeExecutable": "python3",
-      "runtimeArgs": ["dashboard/app.py"],
+      "runtimeArgs": ["app/dashboard.py"],
       "port": 8050
     }
   ]
