@@ -167,14 +167,30 @@ the score down is that **8% is a small difference**. The effect size is 0.18 (95
 **3.5 points out of 25**, and the finding lands in the MEDIUM band rather than HIGH. Certain
 that it happens; not a big enough gap to justify a drastic change.
 
-**Two unusual days are reported — and one of them might be nothing.**
-2 May and 14 June stand more than 4 standard deviations from the week before them. 2 May is the
-day the sample generator's planted six-day slump ends: the week behind it is depressed, the day
-itself is not, so it scores +5.9. 14 June scores +4.9 on its own merits. But the rule flags about
-0.96% of perfectly ordinary days by construction, and 85 days were scanned, so *roughly one
-false alarm is expected per period* — one of these two could easily be noise. The dashboard
-prints that rate next to the finding rather than letting the reader assume a flagged day is
-real.
+**Two unusual days are reported — and neither one is the thing you might assume.**
+2 May and 14 June stand more than 4 standard deviations from the week before them.
+
+2 May is the *rebound* from the sample generator's planted six-day slump, not the slump. The
+slump runs 26 April to 1 May at 70% of normal takings; 2 May is the first day back at full
+level, and six of the seven days in its reference week are slump days, so the week behind it
+sits at £972 while the day itself takes £2052 — hence +5.9.
+
+**The slump itself is never flagged**, and that is worth saying out loud. Its deepest day,
+28 April, scores −3.45, under the threshold; the other five sit between −1.76 and +0.21, because
+each one's reference week already contains the days before it and sinks along with them. A
+gradual six-day level shift is close to invisible to a rule that compares each day with the week
+behind it — such a rule only ever sees a sharp edge, and here the sharp edge is on the way back
+up. So a reader seeing "2 May stands out" would *not* conclude "there was a six-day slump the
+week before". Detecting sustained shifts needs a changepoint test, which this repo does not have;
+it is a named limitation, not an oversight.
+
+14 June (+4.9) has no planted cause and may be nothing at all. Its reference week happened to be
+unusually tight — a standard deviation of £138 against a typical £257 — which makes the threshold
+easier to clear, and running the same rule on day-of-week-adjusted figures scores it +2.76, below
+the line. The rule flags about 0.96% of perfectly ordinary days by construction and 85 days were
+scanned, so **0.8 false alarms are expected per period**: 14 June is plausibly that one. Nothing
+in the data settles it. The dashboard prints that rate beside the finding rather than letting the
+reader assume a flagged day is real.
 
 **Seven days could not be checked at all.** Each day is compared with the seven days before it,
 so the first seven of any file have no week to be compared against. They are reported as
@@ -183,10 +199,20 @@ unscanned rather than quietly counted as clean.
 **Why the threshold is 4 and not 2.5.** This check used to be broken in a way worth describing,
 because it shows what "transparent" has to mean in practice. Each day was scored against a
 7-day window that **included itself**, and a value inside its own sample has a bounded
-deviation: at most 6/√7 = 2.268. The threshold was 2.5. So the check could not fire on *any*
-data — a single day of a billion pounds still scored 2.268 — and the dashboard's confident "no
-day stands out" was an artefact, not a finding. Scoring each day against the week *before* it
-fixes that. But it also means the threshold finally means something, and 2.5 turned out to be the
+deviation: at most 6/√7 = 2.268. The threshold was 2.5. So on exact arithmetic the check could
+not fire on *any* data — a single day of a billion pounds still scored 2.268 — and the
+dashboard's confident "no day stands out" was an artefact, not a finding.
+
+In floating point it was worse than silent. A large enough day (around a quadrillion pounds, so
+not a café, but a corrupted export) wrecks the running sums pandas uses for a rolling standard
+deviation; afterwards it reports a standard deviation of exactly zero where the true figure is a
+few pounds, and never recovers. The old code divided by `sd + 1e-8`, which turned each following
+*ordinary* day into a score around 100 million. So the old rule's real behaviour was to miss the
+outlier and then flag a long run of normal days — 93 of them, in one measured case. Scoring each
+day against the week *before* it fixes the first half; refusing to score a week with no variation
+in it at all (above) fixes the second. On that same file the current code flags the spike, once.
+
+Making the check work also means the threshold finally means something, and 2.5 turned out to be the
 wrong number: with only seven prior days the standard deviation is itself a rough estimate, so
 the score follows a t-distribution with fat tails, and 2.5 would flag **one ordinary day in 17** —
 about five false alarms per 92 days. 4.0 flags about one in 104. At 2.5 this sample would list

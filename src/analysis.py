@@ -382,15 +382,36 @@ def detect_anomalies(df: pd.DataFrame, z_threshold: float = DEFAULT_Z_THRESHOLD)
     WHY THE DAY IS EXCLUDED FROM ITS OWN WINDOW
     -------------------------------------------
     It used to be included (a trailing ``rolling(7, min_periods=1)``), and that
-    made the detector incapable of firing. When a value sits inside the sample it
-    is measured against, its standardised deviation is algebraically bounded: for
-    ``k`` values the largest possible ``|x - mean| / sd`` is ``(k - 1) / sqrt(k)``,
-    which for ``k = 7`` is 2.268. The default threshold was 2.5, above that bound,
-    so **no dataset could produce an anomaly** — a single day of a billion pounds
-    among days of one pound still scored 2.268. ``src/answers.py`` had always told
-    the reader this function used "the average of the 7 days up to it", which is
-    the behaviour implemented here; the self-inclusive window was a bug, not a
-    deliberately conservative choice.
+    made the detector unable to flag a real outlier. When a value sits inside the
+    sample it is measured against, its standardised deviation is algebraically
+    bounded: for ``k`` values the largest possible ``|x - mean| / sd`` is
+    ``(k - 1) / sqrt(k)``, which for ``k = 7`` is 2.268. The default threshold was
+    2.5, above that bound, so **in exact arithmetic no dataset could produce an
+    anomaly** — a single day of a billion pounds among days of one pound still
+    scored 2.268.
+
+    In float64 it was worse than inert. ``pandas`` computes a rolling standard
+    deviation by updating sums as the window slides, and a value large enough
+    (around 1e15 and up, depending on the series) destroys that running state by
+    catastrophic cancellation: once the huge value leaves the window the computed
+    standard deviation comes back as **exactly 0.0** where the true value is
+    several pounds, and it never recovers. The old ``sd + 1e-8`` denominator then
+    turned every subsequent ordinary day into a ``|z|`` of order 1e8–1e9. So the
+    real failure mode was: miss the outlier (its own score is still capped at
+    2.268), then flag a long run of perfectly ordinary days afterwards. One
+    measured example — a noisy baseline around £100 with a single 1e18 day —
+    flagged 93 consecutive ordinary days and never the spike.
+
+    Both halves of the current code are needed to kill that: excluding the day
+    makes a real outlier scorable, and treating a zero-variance reference week as
+    unscorable (below) refuses to divide by pandas' corrupted 0.0 instead of
+    inventing an astronomical score from it. On that same 1e18 series this
+    function flags the spike, once, and reports the 92 corrupted days as
+    unscanned.
+
+    ``src/answers.py`` had always told the reader this function used "the average
+    of the 7 days up to it", which is the behaviour implemented here; the
+    self-inclusive window was a bug, not a deliberately conservative choice.
 
     WHY THE FIRST SEVEN DAYS ARE NOT SCANNED
     ----------------------------------------

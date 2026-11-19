@@ -73,6 +73,19 @@ def test_each_ticket_itemises_its_score(dashboard):
         assert ("Significance" in printed) is tested
         assert f"{insight.confidence_score} of 100" in printed
 
+    # The biconditional above is derived from the same dict it checks, so on its
+    # own it would still pass if a bug made every insight untested. Pin which
+    # findings must carry a real p-value, so that cannot hide here.
+    by_type = {insight.pattern_type: insight for insight in dashboard.insights}
+    for pattern in ("afternoon_dip", "trend"):
+        if pattern in by_type:
+            p_value = by_type[pattern].evidence["p_value"]
+            assert isinstance(p_value, float) and 0 < p_value <= 1, (
+                f"{pattern} rests on a hypothesis test and must report its p-value"
+            )
+    if "anomalies" in by_type:
+        assert by_type["anomalies"].evidence["p_value"] is None
+
 
 def test_a_judged_finding_shows_a_stamp_instead_of_buttons(dashboard):
     insight = dashboard.insights[0]

@@ -537,12 +537,14 @@ def test_the_default_threshold_is_reachable():
     """
     REGRESSION GUARD. The default threshold must be able to fire.
 
-    For most of this repo's life it could not: each day was scored against a
-    rolling window that *included itself*, which bounds the score at
-    (k - 1) / sqrt(k) = 2.268 for k = 7, below the then-default of 2.5. The
-    detector returned zero anomalies for every possible dataset. If anyone ever
-    puts the day back into its own reference window, or raises the default above
-    the bound, this test fails.
+    For most of this repo's life it could not fire on a real outlier: each day
+    was scored against a rolling window that *included itself*, which bounds the
+    score at (k - 1) / sqrt(k) = 2.268 for k = 7, below the then-default of 2.5.
+    In exact arithmetic that meant no dataset could produce an anomaly. In
+    float64 it could produce spurious ones instead, never the outlier -- see
+    test_the_old_rule_could_fire_but_only_on_the_wrong_days. If anyone ever puts
+    the day back into its own reference window, or raises the default above the
+    bound, this test fails.
     """
     rng = np.random.default_rng(7)
     revenue = list(100.0 + rng.normal(0, 5.0, 30))
@@ -566,9 +568,10 @@ def test_why_the_day_is_excluded_from_its_own_window():
     a guard against anyone 'simplifying' the shift(1) away.
 
     A value inside the sample it is measured against has a bounded standardised
-    deviation: |x - mean| / sd <= (k - 1) / sqrt(k). No spike, however large,
-    can exceed it. The shipped default must stay above that bound so the
-    self-inclusive formula could never satisfy it.
+    deviation: |x - mean| / sd <= (k - 1) / sqrt(k), *in exact arithmetic*. No
+    spike, however large, can exceed it. The shipped default must stay above
+    that bound, so the self-inclusive formula could never satisfy it on the
+    outlier it was supposed to catch.
     """
     for k in range(2, 8):
         spike = np.array([1.0] * (k - 1) + [1e12])      # as extreme as floats allow
@@ -577,6 +580,56 @@ def test_why_the_day_is_excluded_from_its_own_window():
 
     assert (ANOMALY_WINDOW - 1) / np.sqrt(ANOMALY_WINDOW) == pytest.approx(2.2678, abs=1e-4)
     assert DEFAULT_Z_THRESHOLD > (ANOMALY_WINDOW - 1) / np.sqrt(ANOMALY_WINDOW)
+
+
+def test_the_old_rule_could_fire_but_only_on_the_wrong_days():
+    """
+    The bound above holds in exact arithmetic. In float64 the old rule was worse
+    than inert, and this pins why, so "it could never fire" is not overstated.
+
+    pandas updates a rolling standard deviation from running sums as the window
+    slides. A large enough value destroys that state by catastrophic
+    cancellation: once it leaves the window the computed sd returns exactly 0.0
+    where the true sd is several pounds, and never recovers. The old
+    `sd + 1e-8` denominator turned each following ordinary day into a |z| of
+    order 1e8. So the old rule missed the spike and flagged the calm afterwards.
+
+    Both of this commit's changes are needed to kill that, and the assertions
+    below check each: excluding the day makes the spike scorable at all, and
+    refusing to score a zero-variance reference week means pandas' corrupted
+    0.0 produces an unscanned day instead of an invented score.
+    """
+    rng = np.random.default_rng(0)
+    revenue = list(100 + rng.normal(0, 5, 100)) + [1e18] + list(100 + rng.normal(0, 5, 99))
+    n = len(revenue)
+
+    # --- the old formula, reconstructed here; it is not in src/ any more ---
+    series = pd.Series(revenue, dtype=float)
+    old_mean = series.rolling(7, min_periods=1).mean()
+    old_std = series.rolling(7, min_periods=1).std()
+    old_z = (series - old_mean) / (old_std + 1e-8)
+    old_flags = [i for i in range(n) if abs(old_z[i]) > 2.5]
+
+    assert len(old_flags) == 93, "a long run of ordinary days, flagged"
+    assert 100 not in old_flags, "and never the spike itself"
+    assert abs(old_z[100]) == pytest.approx(2.2678, abs=1e-4)   # still capped by the bound
+    assert min(old_flags) > 100, "the false flags all follow the spike"
+    assert old_std[old_flags[0]] == 0.0                         # the corrupted state
+    assert series[old_flags[0] - 6:old_flags[0] + 1].std(ddof=1) > 1.0   # true sd is not 0
+    assert abs(old_z[old_flags[0]]) > 1e8
+
+    # --- what the current code does with the very same series ---
+    df = pd.DataFrame({
+        "date": pd.date_range("2026-01-01", periods=n),
+        "hour": [12] * n, "day_of_week": [0] * n,
+        "category": ["Coffee"] * n, "product": ["Espresso"] * n,
+        "quantity": [1] * n, "unit_price": [2.5] * n, "revenue": revenue,
+    })
+    result = detect_anomalies(df)
+    spike_date = (pd.Timestamp("2026-01-01") + pd.Timedelta(days=100)).strftime("%Y-%m-%d")
+
+    assert result["anomalous_dates"] == [spike_date], "the real outlier, and only it"
+    assert result["days_unscored_flat"] == 92, "the corrupted days are unscanned, not flagged"
 
 
 # ---------------------------------------------------------------------------
@@ -879,15 +932,49 @@ def test_the_sample_data_now_surfaces_two_anomalies():
     Pins the newly visible finding on the shipped sample, which reported nothing
     for the whole life of the repo because the threshold was unreachable.
 
-    2026-05-02 is the day the generator's planted 6-day dip (offsets 25-30, at
-    0.7x) ends: its reference week is depressed, it is not, hence z = +5.9.
-    2026-06-14 (z = +4.9) is a genuine excursion -- and over 85 scanned days at
-    ~0.96% a false flag is expected about 0.8 times, so one of the two could be
-    noise. That is what expected_false_flag_rate is in the output for.
+    What the two dates are, precisely:
+
+    2026-05-02 is NOT part of the generator's planted slump and not its last
+    day. The slump is offsets 25-30 at 0.7x, which with START_DATE 2026-04-01 is
+    2026-04-26 to 2026-05-01. 2026-05-02 is offset 31: the first day back at
+    full level. Six of the seven days in its reference window are slump days
+    (£1050, £1090, £723, £966, £736, £1016, against £1219 for 2026-04-25), so
+    the window sits at £972 while the day itself takes £2052 -- hence z = +5.905.
+    It is the slump's rebound.
+
+    And the slump itself is never flagged. Its deepest day, 2026-04-28, scores
+    z = -3.450, under the 4.0 threshold; the other five are between -1.76 and
+    +0.21, because each one's reference window already contains the days before
+    it and sinks with them. A gradual six-day level shift is invisible to a
+    point-anomaly rule, which only ever sees a sharp edge -- here, the edge on
+    the way back up. A reader seeing "2026-05-02 stands out" would not infer
+    "there was a six-day slump the week before", and that is a real limitation
+    of the rule rather than a quirk of this dataset. A changepoint test is the
+    right tool for a sustained shift; see the README.
+
+    2026-06-14 (z = +4.894) has no planted cause. Its reference week was
+    unusually tight -- sd £138.01 against a median £256.98 across the sample --
+    which makes the threshold easier to clear, and the same rule applied to
+    weekday-adjusted residuals scores it +2.760, below threshold. Over 85
+    scanned days at ~0.96% about 0.816 false flags are expected, so it is
+    plausibly that one. Nothing here settles it either way, which is what
+    expected_false_flag_rate is in the output for.
     """
     from src.data_loader import load_sales_data
 
-    result = detect_anomalies(load_sales_data("data/sample_sales.csv"))
+    df = load_sales_data("data/sample_sales.csv")
+    result = detect_anomalies(df)
     assert result["anomalous_dates"] == ["2026-05-02", "2026-06-14"]
     assert result["days_scanned"] == 85 and result["days_unscored"] == 7
     assert result["detected"] is True
+
+    # The planted slump is 2026-04-26..2026-05-01 and none of it is flagged.
+    slump = pd.date_range("2026-04-26", "2026-05-01").strftime("%Y-%m-%d")
+    assert not set(slump) & set(result["anomalous_dates"])
+
+    daily = df.groupby("date")["revenue"].sum().reset_index()
+    window = daily["revenue"].shift(1).rolling(ANOMALY_WINDOW, min_periods=ANOMALY_WINDOW)
+    z = (daily["revenue"] - window.mean()) / window.std()
+    in_slump = daily["date"].isin(pd.date_range("2026-04-26", "2026-05-01"))
+    assert z[in_slump].abs().max() == pytest.approx(3.450, abs=0.001)   # 2026-04-28
+    assert z[in_slump].abs().max() < DEFAULT_Z_THRESHOLD
