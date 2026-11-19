@@ -117,7 +117,10 @@ Users can:
 - **Dismiss** false positives
 - View an audit trail with timestamps
 
-All stored in SQLite (`insights.db`).
+On the live site a stamp belongs to the visitor who made it: it is held in memory against their
+own session and is invisible to everyone else, so two strangers can judge the same finding
+without overwriting each other. Run locally, the same findings are also recorded in SQLite
+(`insights.db`) with timestamps, which is the audit trail; no web request writes to it.
 
 ### 5. Fixed Q&A, Not Free-Form LLM
 
@@ -440,8 +443,28 @@ Two things that are easy to get wrong on Render, both learned the hard way:
   pass. After deploying, confirm the page shows the headline "What do the sales say?" and a total
   of £117,212 rather than trusting the green tick.
 
-Verify and Dismiss stamps are kept in a local SQLite file (`insights.db`). On a host with a
-temporary disk they reset whenever the service restarts.
+**Per-visitor state.** The live site has no login and runs one worker, so nothing on it is
+shared between visitors by accident. An uploaded file and the Verify/Dismiss stamps belong to
+one session, identified by an opaque 256-bit HttpOnly cookie the server mints and resolves
+per request; a visitor with no session sees the sample data, which is why a cold start always
+demos. Sessions are held in memory only — nothing a web request does touches the disk — and
+the store is capped four ways: 24 sessions, 48 MB of retained data in total, 24 MB for any
+one visitor, and 30 minutes of idleness, least-recently-used evicted first. A file too big to
+retain is still rendered once for the visitor who sent it, with a note that it was not kept.
+
+A visitor whose file was evicted or has expired is told so and shown the sample again. A
+visitor who loses it to a *worker restart* is not: the record of what was dropped lives in the
+same process as the data, so after a recycle their cookie is still good, their file is gone,
+and they silently get the sample back. Telling them would need state that outlives the
+process, which this design deliberately does not have.
+
+Request bodies are capped at 8 MB (`MAX_CONTENT_LENGTH`), which is the 5 MB upload limit plus
+room for base64 expansion. Without it a single oversized POST is enough to get the worker
+killed for running out of memory before the upload cap is ever checked — the cap is enforced
+before the parse, but the body has already been buffered and decoded by then.
+
+The SQLite audit file (`insights.db`) is a local-use feature; if it cannot be opened the page
+says so and carries on.
 
 ## Contact & Feedback
 
