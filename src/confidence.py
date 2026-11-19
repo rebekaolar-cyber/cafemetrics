@@ -5,7 +5,7 @@ consistency, effect size, and statistical significance into a 0–100 confidence
 Every score is auditable and explainable—no black-box models.
 """
 
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 # The four parts of the score and how many of the 100 points each can give.
 WEIGHTS: Dict[str, float] = {
@@ -15,23 +15,63 @@ WEIGHTS: Dict[str, float] = {
     "Significance": 0.15,
 }
 
+# The part that only a genuine hypothesis test can earn. A rule that performs no
+# test scores on the other three, rescaled — see active_weights().
+SIGNIFICANCE = "Significance"
+
+
+def active_weights(tested: bool) -> Dict[str, float]:
+    """
+    The weights in play for one finding, depending on whether a test was run.
+
+    A detector that performs a hypothesis test is scored on all four parts, with
+    the weights in WEIGHTS. A detector that performs no test — the anomaly scan
+    is a thresholding rule, not a test — cannot earn the Significance part, so
+    that part is removed and the remaining three are rescaled to still total
+    100. Rescaling rather than simply capping such a finding at 85 keeps the
+    0–100 scale meaning the same thing on every ticket: a score is always the
+    share of the evidence available *for that kind of finding*.
+
+    Args:
+        tested: True if a p-value from a real test is available.
+
+    Returns:
+        Mapping of part name to weight, summing to 1.0.
+    """
+    if tested:
+        return dict(WEIGHTS)
+    kept = {name: weight for name, weight in WEIGHTS.items() if name != SIGNIFICANCE}
+    total = sum(kept.values())
+    return {name: weight / total for name, weight in kept.items()}
+
 
 def confidence_breakdown(
     sample_size: int,
     consistency_ratio: float,
     effect_size: float,
-    p_value: float,
+    p_value: Optional[float] = None,
 ) -> List[Dict[str, float]]:
     """
     The confidence score, itemised: how many points each part contributed.
 
     Uses exactly the formula documented in compute_confidence(), which sums these parts.
 
+    Args:
+        sample_size: Number of days or observations (≥1).
+        consistency_ratio: Fraction of periods pattern was observed (0–1).
+        effect_size: Magnitude of effect (≥0).
+        p_value: The p-value of the test behind the finding, or **None when the
+            detector performs no test**. None drops the Significance part and
+            rescales the other three to total 100 (see active_weights()); it
+            does not score zero for significance, because "no test was run" is
+            not the same claim as "the test found nothing".
+
     Returns:
         One dict per part, in the order of WEIGHTS, with keys:
         - name: "Sample size", "Consistency", "Effect size" or "Significance"
         - points: points earned (weight × component score), not rounded
-        - max_points: the most this part can give (25, 35, 25, 15)
+        - max_points: the most this part can give — 25, 35, 25, 15 with a
+          p-value; 29.4, 41.2, 29.4 and no Significance row without one
 
     Raises:
         ValueError: If inputs are out of expected ranges.
@@ -42,8 +82,8 @@ def confidence_breakdown(
         raise ValueError("consistency_ratio must be in [0, 1]")
     if effect_size < 0:
         raise ValueError("effect_size must be ≥0")
-    if not (0 <= p_value <= 1):
-        raise ValueError("p_value must be in [0, 1]")
+    if p_value is not None and not (0 <= p_value <= 1):
+        raise ValueError("p_value must be in [0, 1], or None if no test was run")
 
     # 30 days of data = full marks
     size_score = min(100, (sample_size / 30) * 100)
@@ -51,13 +91,20 @@ def confidence_breakdown(
     consistency_score = consistency_ratio * 100
     # Cohen's d scale, capped at 1.25 for a full 100 points
     effect_score = min(100, effect_size * 80)
-    # Only awarded if p < 0.05 (conventional threshold)
-    p_value_score = 0 if p_value >= 0.05 else (1 - p_value) * 100
 
-    scores = [size_score, consistency_score, effect_score, p_value_score]
+    scores = {
+        "Sample size": size_score,
+        "Consistency": consistency_score,
+        "Effect size": effect_score,
+    }
+    if p_value is not None:
+        # Only awarded if p < 0.05 (conventional threshold)
+        scores[SIGNIFICANCE] = 0 if p_value >= 0.05 else (1 - p_value) * 100
+
+    weights = active_weights(tested=p_value is not None)
     return [
-        {"name": name, "points": weight * score, "max_points": weight * 100}
-        for (name, weight), score in zip(WEIGHTS.items(), scores)
+        {"name": name, "points": weight * scores[name], "max_points": weight * 100}
+        for name, weight in weights.items()
     ]
 
 
@@ -65,7 +112,7 @@ def compute_confidence(
     sample_size: int,
     consistency_ratio: float,
     effect_size: float,
-    p_value: float,
+    p_value: Optional[float] = None,
 ) -> int:
     """
     Compute insight confidence score (0–100) from statistical evidence.
@@ -104,11 +151,22 @@ def compute_confidence(
     - effect_weight: 0.25 (practical significance)
     - pvalue_weight: 0.15 (statistical rigor, but not dominant)
 
+    FINDINGS WITH NO TEST BEHIND THEM
+    ---------------------------------
+    Pass p_value=None when the detector performs no hypothesis test, and the
+    Significance component is dropped and the other three rescaled to total 100
+    (0.294 / 0.412 / 0.294). The anomaly scan is the case in this project: it
+    compares rolling z-scores against a threshold, which yields no p-value. The
+    alternative of handing such a finding a nominal p-value would be inventing
+    evidence, and scoring it p = 1.0 would be claiming a test had been run and
+    had failed. Neither is true, so neither is reported.
+
     Args:
         sample_size: Number of days or observations (≥1).
         consistency_ratio: Fraction of periods pattern was observed (0–1).
         effect_size: Magnitude of effect (e.g., Cohen's d; ≥0).
-        p_value: Statistical significance (0–1; typically from t-test or linregress).
+        p_value: Statistical significance (0–1; typically from t-test or
+            linregress), or None if the finding rests on no test at all.
 
     Returns:
         Confidence score 0–100 (int).

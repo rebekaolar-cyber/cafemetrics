@@ -370,7 +370,11 @@ def scoring_ticket():
         className="paper ticket how",
         children=[
             html.H3("How a score is added up"),
-            html.P("Every finding is scored out of 100 by the same four rules. No model, no AI."),
+            html.P(
+                "Every finding is scored out of 100 by the same four rules. No model, no AI. "
+                "A finding that rests on no statistical test, like the unusual-day scan, is "
+                "scored on the first three, rescaled to total 100."
+            ),
             html.Div(className="receipt", children=rows),
             html.P("85 or more is high, 60 to 84 medium, under 60 low.", className="basis"),
         ],

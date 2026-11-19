@@ -66,6 +66,12 @@ score = 0.25×size_score + 0.35×consistency_score + 0.25×effect_score + 0.15×
 - **effect_score**: min(100, effect_size × 80) — Cohen's d scale
 - **p_value_score**: (1 – p_value) × 100 if p < 0.05, else 0
 
+**Findings with no test behind them**: the unusual-day scan compares rolling z-scores against a
+threshold and performs no hypothesis test, so there is no p-value to score. Its findings are
+scored on the first three components, rescaled to still total 100
+(0.294 / 0.412 / 0.294) — not handed a nominal p-value, and not scored as though a test had run
+and failed. Those are three different claims and only one of them is true.
+
 **Bands**: HIGH (≥85), MEDIUM (60–84), LOW (<60)
 
 Every score includes a **basis** line: "6 weeks of data, consistent across 28/30 weekdays."
@@ -159,9 +165,15 @@ the score down is that **8% is a small difference**. The effect size is 0.18 (95
 **3.5 points out of 25**, and the finding lands in the MEDIUM band rather than HIGH. Certain
 that it happens; not a big enough gap to justify a drastic change.
 
-**No unusual days.** None of the 92 days sits more than 2.5 standard deviations from the week
-running up to it. The sample data has no closures, heatwaves or festivals in it, so this is the
-expected answer rather than a surprising one.
+**No unusual days — and a known defect behind that answer.** None of the 92 days sits more than
+2.5 standard deviations from the week running up to it. The sample data has no closures,
+heatwaves or festivals in it, so this is the expected answer. But it is also the *only* answer
+this check can currently give: each day is scored against a 7-day window that **includes
+itself**, which bounds the score at 6/√7 = 2.268 — below the 2.5 threshold. A single day of a
+billion pounds would still score 2.268. So `detect_anomalies()` reports nothing at its default
+setting whatever the data, and that is a bug, not a result. It is pinned by a test, documented in
+the function, and fixed by scoring each day against the window *before* it; that change alters
+which days the dashboard reports, so it belongs in its own commit.
 
 **The one number no statistics can supply.** A reported dip says the afternoons *are* quieter.
 It does not say why, and nothing in this repo pretends otherwise.

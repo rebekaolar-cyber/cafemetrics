@@ -72,11 +72,12 @@ def hour_range(hours: List[int]) -> str:
 def dip_answer(dip: Dict[str, Any]) -> Answer:
     """Is there an afternoon dip? From detect_afternoon_dip()."""
     window = hour_range(dip["dip_hours"])
-    if dip["sample_size"] == 0:
+    if dip["sample_size"] < 2:
         return Answer(
             "Not enough data to tell",
-            f"There are no sales in the {window} window to compare with the rest of the day.",
-            "Needs at least one day with sales both inside and outside the window.",
+            f"There are not two days with sales both inside and outside the {window} window, "
+            f"so there is nothing to compare. {dip.get('exclusion_note', '')}".strip(),
+            "A paired comparison needs at least two days with sales on both sides of the window.",
         )
     dip_avg, overall = dip["dip_avg_revenue"], dip["overall_avg_revenue"]
     gap = abs(overall - dip_avg) / overall * 100 if overall else 0.0
@@ -89,6 +90,9 @@ def dip_answer(dip: Dict[str, Any]) -> Answer:
         f"The window is compared against every other hour the café is open, "
         f"quiet opening and closing hours included."
     )
+    note = dip.get("exclusion_note", "")
+    if note:
+        evidence = f"{evidence} {note}"
     if not dip["detected"]:
         return Answer(
             "No afternoon dip",

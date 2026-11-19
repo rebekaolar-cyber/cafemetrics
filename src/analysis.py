@@ -22,6 +22,8 @@ p-value. Inventing one so it could be corrected would be worse than leaving it
 out, so the family is the tests that genuinely have p-values.
 """
 
+import warnings
+
 import pandas as pd
 import numpy as np
 from scipy import stats
@@ -87,6 +89,17 @@ def detect_afternoon_dip(df: pd.DataFrame, dip_window: Tuple[int, int] = (14, 16
     denominators would promote the only finding in the sample data, which is a
     reason for suspicion, not for switching.
 
+    WHICH DAYS ARE COMPARED
+    -----------------------
+    Only days with sales both inside and outside the window can be paired, so
+    the two series are inner-joined on the date before the test. A day that
+    closed before 14:00, or that sold nothing outside the afternoon, is dropped.
+    The count of dropped days is reported in ``days_excluded`` and spelled out
+    in ``exclusion_note`` rather than being swallowed, and ``sample_size`` is
+    the number of days actually compared — so the confidence score rests on the
+    days the test used, not on the days the file happened to contain. Every
+    average in the result is taken over the paired days too.
+
     Args:
         df: Sales data with 'date', 'hour' and 'revenue' columns.
         dip_window: Tuple of (start_hour, end_hour) to check for dip (inclusive).
@@ -95,7 +108,12 @@ def detect_afternoon_dip(df: pd.DataFrame, dip_window: Tuple[int, int] = (14, 16
         Dict with keys:
         - detected: bool, True if the window is both lower and significant after
           family correction (p_value_corrected < 0.05)
-        - sample_size: number of days compared
+        - sample_size: number of days actually compared (i.e. paired days)
+        - days_in_data: distinct days present in the data
+        - days_excluded: days_in_data - sample_size, i.e. days with nothing to
+          pair against
+        - exclusion_note: a sentence naming how many days were left out and why,
+          or "" when none were
         - effect_size: see above (>= 0)
         - effect_size_ci: 95% bootstrap interval for effect_size, from
           bootstrap_ci() resampling whole days
@@ -111,17 +129,46 @@ def detect_afternoon_dip(df: pd.DataFrame, dip_window: Tuple[int, int] = (14, 16
 
     dip_start, dip_end = dip_window
     dip_hours = list(range(dip_start, dip_end + 1))
-    dip_data = hourly[hourly["hour"].isin(dip_hours)].groupby("date")["revenue"].mean()
-    non_dip_data = hourly[~hourly["hour"].isin(dip_hours)].groupby("date")["revenue"].mean()
+    dip_by_day = hourly[hourly["hour"].isin(dip_hours)].groupby("date")["revenue"].mean()
+    non_dip_by_day = hourly[~hourly["hour"].isin(dip_hours)].groupby("date")["revenue"].mean()
+
+    # Only days with sales BOTH inside and outside the window can be paired. A
+    # day that closed before 14:00, or sold nothing but afternoon coffee, has
+    # nothing to pair with and is dropped. Without this inner join the two
+    # series can differ in length (scipy then raises "unequal length arrays")
+    # or, worse, be the same length while describing different dates, in which
+    # case the paired test silently pairs one day's afternoon with another
+    # day's morning. Dropping unpaired days is also the statistically correct
+    # move, not merely the safe one: a paired test is defined only on pairs.
+    paired_dates = dip_by_day.index.intersection(non_dip_by_day.index).sort_values()
+    dip_data = dip_by_day.loc[paired_dates]
+    non_dip_data = non_dip_by_day.loc[paired_dates]
+
+    days_in_data = int(hourly["date"].nunique())
+    days_excluded = days_in_data - len(paired_dates)
+    exclusion_note = (
+        ""
+        if days_excluded == 0
+        else (
+            f"{days_excluded} of {days_in_data} days had sales only inside or only outside "
+            f"{min(dip_hours):02d}:00–{max(dip_hours) + 1:02d}:00, so there was nothing to "
+            f"compare them against; they are left out of the test."
+        )
+    )
 
     no_interval = {
         "ci_low": float("nan"), "ci_high": float("nan"),
         "confidence": BOOTSTRAP_CONFIDENCE, "n_resamples": 0, "n_effective": 0,
     }
-    if len(dip_data) == 0 or len(non_dip_data) == 0:
+    # A paired test needs at least two pairs; with one, the t-statistic has no
+    # degrees of freedom and scipy returns NaN.
+    if len(paired_dates) < 2:
         return {
             "detected": False,
-            "sample_size": 0,
+            "sample_size": len(paired_dates),
+            "days_in_data": days_in_data,
+            "days_excluded": days_excluded,
+            "exclusion_note": exclusion_note,
             "effect_size": 0.0,
             "effect_size_ci": no_interval,
             "p_value": 1.0,
@@ -132,20 +179,24 @@ def detect_afternoon_dip(df: pd.DataFrame, dip_window: Tuple[int, int] = (14, 16
             "overall_avg_revenue": 0.0,
         }
 
+    # Every average below is taken over the paired days only, so the figures the
+    # dashboard shows describe exactly the days the test rested on.
+    compared = hourly[hourly["date"].isin(paired_dates)]
+
     dip_avg = dip_data.mean()
-    hour_means = hourly.groupby("hour")["revenue"].mean()
+    hour_means = compared.groupby("hour")["revenue"].mean()
     overall_avg = hour_means.mean()
 
     effect_size = dip_effect_size(hour_means.values, dip_data.values)
 
-    # Paired t-test over the days present in both groups.
-    t_stat, p_value = stats.ttest_rel(dip_data, non_dip_data)
+    # Paired t-test over the days present in both groups, in the same date order.
+    t_stat, p_value = stats.ttest_rel(dip_data.values, non_dip_data.values)
     p_value = _clean_p(p_value)
 
     # Bootstrap: resample whole trading days, because the day is the unit the
     # paired test pairs on. Each resample rebuilds both the per-hour means and
     # the per-day dip means, so the interval reflects every part of the statistic.
-    day_hour = hourly.pivot_table(index="date", columns="hour", values="revenue", aggfunc="sum")
+    day_hour = compared.pivot_table(index="date", columns="hour", values="revenue", aggfunc="sum")
     dip_columns = [hour for hour in day_hour.columns if hour in dip_hours]
     matrix = day_hour.to_numpy(dtype=float)
     dip_matrix = day_hour[dip_columns].to_numpy(dtype=float) if dip_columns else None
@@ -163,11 +214,20 @@ def detect_afternoon_dip(df: pd.DataFrame, dip_window: Tuple[int, int] = (14, 16
             return float("nan")
         return dip_effect_size(hours, dips)
 
-    effect_ci = bootstrap_ci(one_resample)
+    with warnings.catch_warnings():
+        # Days can trade different hours, so a resample may draw no day at all
+        # that traded some hour; nanmean warns "Mean of empty slice" and returns
+        # NaN, which the lines above then drop. The behaviour is wanted, the
+        # warning is noise, and a real till export would emit thousands of them.
+        warnings.filterwarnings("ignore", message="Mean of empty slice", category=RuntimeWarning)
+        effect_ci = bootstrap_ci(one_resample)
 
     return {
         "detected": bool(dip_avg < overall_avg and p_value < FAMILY_ALPHA),
         "sample_size": len(dip_data),
+        "days_in_data": days_in_data,
+        "days_excluded": days_excluded,
+        "exclusion_note": exclusion_note,
         "effect_size": effect_size,
         "effect_size_ci": effect_ci,
         "p_value": p_value,
@@ -225,16 +285,14 @@ def detect_trend(df: pd.DataFrame) -> Dict[str, Any]:
         - trend_direction: "upward", "downward", or "none"
     """
     daily = df.groupby("date", as_index=False)["revenue"].sum()
-    if "day_of_week" in df.columns:
-        weekday_lookup = df.groupby("date")["day_of_week"].first()
-        weekdays = daily["date"].map(weekday_lookup).to_numpy()
-    else:
-        weekdays = daily["date"].dt.weekday.to_numpy()
 
     no_interval = {
         "ci_low": float("nan"), "ci_high": float("nan"),
         "confidence": BOOTSTRAP_CONFIDENCE, "n_resamples": 0, "n_effective": 0,
     }
+    # This check comes before the weekday lookup on purpose: an empty frame has
+    # no usable 'date' dtype, and deriving the weekday from it first raised
+    # AttributeError on exactly the empty frames the callers already guard for.
     if len(daily) < 3:
         return {
             "detected": False,
@@ -251,6 +309,12 @@ def detect_trend(df: pd.DataFrame) -> Dict[str, Any]:
             "sample_size": len(daily),
             "trend_direction": "none",
         }
+
+    if "day_of_week" in df.columns:
+        weekday_lookup = df.groupby("date")["day_of_week"].first()
+        weekdays = daily["date"].map(weekday_lookup).to_numpy()
+    else:
+        weekdays = daily["date"].dt.weekday.to_numpy()
 
     y = daily["revenue"].to_numpy(dtype=float)
     x = np.arange(len(daily), dtype=float)
@@ -306,7 +370,26 @@ def detect_anomalies(df: pd.DataFrame, z_threshold: float = 2.5) -> Dict[str, An
 
     This is a thresholding rule, not a hypothesis test: it yields no p-value and
     therefore takes no part in the family-wise correction applied in
-    ``analyze_all()``.
+    ``analyze_all()``, and the insight built from it is scored without a
+    significance component (see ``src/confidence.py``).
+
+    KNOWN DEFECT: THE DEFAULT THRESHOLD CANNOT BE REACHED
+    -----------------------------------------------------
+    Because each day is scored against a window that **includes itself**, the
+    z-score is algebraically bounded. For a sample of ``k`` values the largest
+    possible ``|x_i - mean| / sd`` is ``(k - 1) / sqrt(k)``; with a 7-day window
+    that is ``6 / sqrt(7) = 2.268``. The default ``z_threshold`` of 2.5 is above
+    that bound, so **this function returns zero anomalies for every possible
+    dataset at its default setting** — a single day of a billion pounds against
+    neighbours of one pound still scores 2.268. Verified in
+    ``tests/test_analysis.py::test_the_default_threshold_is_unreachable``.
+
+    The fix is to score each day against the window *before* it (a ``shift(1)``,
+    which is also what ``src/answers.py`` already tells the reader it does:
+    "the 7 days up to it"), and only then to revisit the threshold. That changes
+    which days the dashboard reports, so it is deliberately left to its own
+    change rather than bundled here. Until then, a caller wanting this detector
+    to do anything must pass an explicit ``z_threshold`` below 2.268.
 
     Args:
         df: Sales data with 'date' and 'revenue' columns.

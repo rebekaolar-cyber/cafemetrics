@@ -210,7 +210,13 @@ def generate_anomaly_insights(
         "sample_size": calendar_days,
         "consistency_ratio": anomalies["anomaly_count"] / calendar_days,
         "effect_size": anomalies["mean_z_score"] * 0.3,
-        "p_value": 0.001 if anomalies["anomaly_count"] > 0 else 1.0,
+        # No p-value: detect_anomalies() compares rolling z-scores against a
+        # threshold and performs no hypothesis test, so there is no significance
+        # to report. This used to be hard-coded to 0.001 whenever any day was
+        # flagged, which handed the finding all 15 significance points on no
+        # evidence whatever. None drops that component and rescales the other
+        # three to total 100; see src/confidence.py.
+        "p_value": None,
     }
     score = compute_confidence(**evidence)
 

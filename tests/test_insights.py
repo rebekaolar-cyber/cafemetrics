@@ -333,3 +333,53 @@ def test_generated_insights_record_the_evidence_behind_their_score():
     for insight in insights:
         assert set(insight.evidence) == {"sample_size", "consistency_ratio", "effect_size", "p_value"}
         assert compute_confidence(**insight.evidence) == insight.confidence_score
+
+
+class TestAnomalyInsightsCarryNoFabricatedSignificance:
+    """The anomaly scan runs no test, so its insight claims no significance."""
+
+    @staticmethod
+    def _anomaly_analysis():
+        """30 days with two outliers, scanned at a threshold the rule can reach."""
+        from src.analysis import analyze_all, detect_anomalies
+
+        rows = []
+        for day in range(1, 31):
+            revenue = 100.0
+            if day == 12:
+                revenue = 5.0
+            if day == 24:
+                revenue = 400.0
+            rows.append({
+                "date": pd.Timestamp(f"2026-04-{day:02d}"), "hour": 12,
+                "day_of_week": 0, "category": "Coffee", "product": "Espresso",
+                "quantity": 1, "unit_price": 2.5, "revenue": revenue,
+            })
+        df = pd.DataFrame(rows)
+        analysis = analyze_all(df)
+        # The default z_threshold of 2.5 is unreachable (see
+        # test_analysis.test_the_default_threshold_is_unreachable), so the scan
+        # is re-run at 2.0 to get a dataset that actually has anomalies.
+        analysis["anomalies"] = detect_anomalies(df, z_threshold=2.0)
+        return analysis
+
+    def test_the_evidence_records_no_p_value(self):
+        analysis = self._anomaly_analysis()
+        insights = generate_anomaly_insights(analysis, 30)
+
+        assert len(insights) == 1
+        assert insights[0].evidence["p_value"] is None   # was hard-coded 0.001
+
+    def test_the_score_drops_by_the_fabricated_points(self):
+        analysis = self._anomaly_analysis()
+        insight = generate_anomaly_insights(analysis, 30)[0]
+        assert insight.confidence_score == 34            # was 44
+
+    def test_the_itemised_receipt_shows_three_parts_not_four(self):
+        from src.confidence import confidence_breakdown
+
+        analysis = self._anomaly_analysis()
+        insight = generate_anomaly_insights(analysis, 30)[0]
+        parts = confidence_breakdown(**insight.evidence)
+        assert [part["name"] for part in parts] == ["Sample size", "Consistency", "Effect size"]
+        assert round(sum(part["points"] for part in parts)) == insight.confidence_score
