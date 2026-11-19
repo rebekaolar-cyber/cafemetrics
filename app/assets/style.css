@@ -158,3 +158,45 @@ button:focus-visible, a:focus-visible { outline: 3px solid var(--hot); outline-o
   .stamp { animation: stamp 0.25s ease-out; }
   @keyframes stamp { from { transform: rotate(-4deg) scale(1.6); opacity: 0; } to { transform: rotate(-4deg) scale(1); opacity: 1; } }
 }
+
+/* ---- upload: bring your own till export */
+.upload { margin-bottom: 1.6rem; }
+.upload h3 { font-size: 1.25rem; font-weight: 800; margin-bottom: 0.4rem; }
+.upload .section-note { color: var(--ink-2); margin: 0 0 1rem; }
+.dropzone {
+  border: 2px dashed var(--rule);
+  border-radius: 10px;
+  padding: 1.4rem 1rem;
+  text-align: center;
+  color: var(--ink-2);
+  cursor: pointer;
+  background: #fbf8ef;
+}
+.dropzone:hover { border-color: var(--bar); background: #f4f8f6; }
+.dropzone b { color: var(--counter-deep); text-decoration: underline; }
+.upload .btn { margin-top: 1rem; }
+.source-note {
+  color: var(--on-counter-soft);
+  font-family: "Recursive Mono", ui-monospace, monospace;
+  font-size: 0.9rem;
+  margin: 0 0 0.6rem;
+}
+
+/* ---- the validation report: what the loader made of the file */
+.report { margin-top: 1.2rem; border-left: 6px solid var(--ok); padding: 0.9rem 0 0.2rem 1rem; }
+.report.bad { border-left-color: var(--no); }
+.report h3 { font-size: 1.1rem; font-weight: 800; margin-bottom: 0.2rem; }
+.report h4 {
+  font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.06em;
+  color: var(--muted); margin: 0.9rem 0 0.3rem;
+}
+.report ul { list-style: none; padding: 0; margin: 0; }
+.report li {
+  font-family: "Recursive Mono", ui-monospace, monospace;
+  font-size: 0.88rem; color: var(--ink-2);
+  padding: 0.15rem 0; border-bottom: 1px dotted var(--rule);
+}
+.report .basis { color: var(--muted); font-size: 0.9rem; margin-bottom: 0.4rem; }
+.report-line { color: var(--ink-2); margin: 0.3rem 0; max-width: 54em; }
+.report-line.bad { color: #7a1c14; font-weight: 600; }
+.report-line.warn { color: #7a4a12; }

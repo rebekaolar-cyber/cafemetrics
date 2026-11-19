@@ -12,10 +12,12 @@ How it looks is in assets/style.css. This file is structure and callbacks.
 
 import os
 import sys
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Optional
 
 import plotly.graph_objects as go
-from dash import ALL, Dash, Input, Output, ctx, dcc, html
+from dash import ALL, Dash, Input, Output, State, ctx, dcc, html
 from dash.exceptions import PreventUpdate
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -24,6 +26,7 @@ from src.analysis import analyze_all
 from src.answers import Answer, anomaly_answer, dip_answer, trend_answer
 from src.confidence import WEIGHTS, confidence_breakdown
 from src.data_loader import aggregate_by_hour, get_data_span, load_sales_data
+from src.ingest import MAX_UPLOAD_BYTES, LoadReport, read_upload
 from src.insights import generate_all_insights
 from src.metrics import summary_metrics
 from src.verification import get_insights, init_db, save_insight, update_insight_status
@@ -86,6 +89,79 @@ if insights:
             insight.status = "pending"
 
 
+# ---------------------------------------------------------------- the dataset on show -------
+#
+# The page can show two things: the sample data, loaded above and always
+# available so the live demo works on a cold start, or a file somebody has just
+# uploaded. Both are a Dataset. The module-level `df`, `metrics`, `insights`,
+# `hourly`, `analysis` and `trading_days` stay bound to the sample for anything
+# that reads them directly.
+#
+# CURRENT is process-wide: one visitor's upload changes what the next request
+# renders. That is wrong for a multi-user service and fine for a one-instance
+# demo with one dyno and no login, which is what this is. Uploaded findings are
+# never written to the audit database and carry no Verify/Dismiss buttons — the
+# audit trail is about this café's sample, not a stranger's file.
+
+
+@dataclass
+class Dataset:
+    """Everything the page needs about one set of sales."""
+
+    df: object
+    metrics: dict
+    insights: list
+    hourly: object
+    analysis: Optional[dict]
+    trading_days: int
+    label: str
+    verifiable: bool = False
+    report: Optional[LoadReport] = None
+
+
+SAMPLE = Dataset(
+    df=df, metrics=metrics, insights=insights, hourly=hourly, analysis=analysis,
+    trading_days=trading_days, label="Sample data", verifiable=True,
+)
+CURRENT = SAMPLE
+
+
+def build_dataset(frame, label: str, report: LoadReport) -> Dataset:
+    """Run the whole analysis over an uploaded frame.
+
+    The rules in src/analysis.py were written against the sample data and can
+    still fall over on a real export — a café that shuts at two o'clock gives
+    the afternoon-dip t-test two series of different lengths, and scipy raises.
+    A stranger's file must not be able to put a traceback on the page, so the
+    rules are run behind a guard: when they fail the totals and the chart still
+    render and the report says the findings could not be worked out.
+    """
+    _, days = get_data_span(frame)
+    analysis_result = None
+    found = []
+    try:
+        analysis_result = analyze_all(frame)
+        found = generate_all_insights(frame)
+    except Exception as error:  # noqa: BLE001 - anything at all, from any rule
+        report.warnings.append(
+            "The totals and the chart below are from your file, but the pattern rules "
+            f"could not be run on it ({type(error).__name__}). That usually means the "
+            "data is too thin or too uneven for the statistics — too few days, or hours "
+            "that appear on some days and not others."
+        )
+    return Dataset(
+        df=frame,
+        metrics=summary_metrics(frame),
+        insights=found,
+        hourly=aggregate_by_hour(frame),
+        analysis=analysis_result,
+        trading_days=days,
+        label=label,
+        verifiable=False,
+        report=report,
+    )
+
+
 # ---------------------------------------------------------------- building blocks ------------
 
 BAND_WORDS = {"HIGH": "High confidence", "MEDIUM": "Medium confidence", "LOW": "Low confidence"}
@@ -102,31 +178,35 @@ def figure(value, label):
     return html.Div(className="figure", children=[html.B(value), html.Span(label)])
 
 
-def till_strip():
+def till_strip(data: Optional[Dataset] = None):
+    data = data or CURRENT
+    figures = data.metrics
     return html.Section(
         className="paper strip figures",
         children=[
-            figure(f"£{metrics.get('total_revenue', 0):,.0f}", f"taken in {trading_days} days"),
-            figure(f"£{metrics.get('avg_daily_revenue', 0):,.0f}", "on an average day"),
-            figure(f"{metrics.get('total_transactions', 0):,}", "sales"),
-            figure(f"{int(metrics.get('peak_hour', 0)):02d}:00", "the busiest hour"),
+            figure(f"£{figures.get('total_revenue', 0):,.0f}", f"taken in {data.trading_days} days"),
+            figure(f"£{figures.get('avg_daily_revenue', 0):,.0f}", "on an average day"),
+            figure(f"{figures.get('total_transactions', 0):,}", "sales"),
+            figure(f"{int(figures.get('peak_hour', 0)):02d}:00", "the busiest hour"),
         ],
     )
 
 
-def dip_hours():
+def dip_hours(data: Optional[Dataset] = None):
     """The hours the afternoon-dip rule checks, if it found a dip."""
-    dip = analysis["afternoon_dip"] if analysis else None
+    data = data or CURRENT
+    dip = data.analysis["afternoon_dip"] if data.analysis else None
     return dip["dip_hours"] if dip and dip["detected"] else []
 
 
-def hourly_figure():
+def hourly_figure(data: Optional[Dataset] = None):
     """Revenue by hour of the day, summed over the whole period."""
-    if hourly is None:
+    data = data or CURRENT
+    if data.hourly is None:
         return go.Figure()
 
-    by_hour = hourly.groupby("hour")["total_revenue"].sum()
-    marked = dip_hours()
+    by_hour = data.hourly.groupby("hour")["total_revenue"].sum()
+    marked = dip_hours(data)
     peak = by_hour.idxmax()
 
     fig = go.Figure(
@@ -172,8 +252,9 @@ def hourly_figure():
     return fig
 
 
-def chart_ticket():
-    marked = dip_hours()
+def chart_ticket(data: Optional[Dataset] = None):
+    data = data or CURRENT
+    marked = dip_hours(data)
     key = [html.Span([html.I(), "revenue in that hour, all days added up"])]
     if marked:
         window = f"{min(marked):02d}:00 to {max(marked) + 1:02d}:00"
@@ -182,7 +263,7 @@ def chart_ticket():
         className="paper",
         children=[
             html.Div(className="key", children=key),
-            dcc.Graph(id="hourly-chart", figure=hourly_figure(), config={"displayModeBar": False}),
+            dcc.Graph(id="hourly-chart", figure=hourly_figure(data), config={"displayModeBar": False}),
         ],
     )
 
@@ -216,8 +297,12 @@ def receipt(insight):
     return html.Div(className="receipt", children=rows)
 
 
-def ticket_foot(insight):
+def ticket_foot(insight, verifiable: bool = True):
     """Verify and Dismiss while the finding is open; the stamp once it has been judged."""
+    if not verifiable:
+        # An uploaded file is not this cafe's own data: nothing to confirm against,
+        # and nothing that belongs in the audit database.
+        return [html.Span("From the file you uploaded, not saved.", className="ask")]
     if insight.status == "verified":
         return [html.Span("Verified", className="stamp")]
     if insight.status == "dismissed":
@@ -237,7 +322,7 @@ def ticket_foot(insight):
     ]
 
 
-def ticket_body(insight):
+def ticket_body(insight, verifiable: bool = True):
     """Everything printed on one finding's ticket."""
     return [
         html.Div(
@@ -254,7 +339,7 @@ def ticket_body(insight):
         receipt(insight),
         html.P(f"Based on {insight.basis}.", className="basis"),
         html.P([html.B("What to do"), insight.suggested_action], className="action"),
-        html.Div(className="ticket-foot", children=ticket_foot(insight)),
+        html.Div(className="ticket-foot", children=ticket_foot(insight, verifiable)),
     ]
 
 
@@ -292,8 +377,9 @@ def scoring_ticket():
     )
 
 
-def findings():
-    if not insights:
+def findings(data: Optional[Dataset] = None):
+    data = data or CURRENT
+    if not data.insights:
         note = html.Div(
             className="paper ticket",
             children=[
@@ -308,11 +394,12 @@ def findings():
         return [note, scoring_ticket()]
     tickets = [
         html.Article(
-            id={"type": "insight-card", "index": insight.pattern_type},
+            id=({"type": "insight-card", "index": insight.pattern_type}
+                if data.verifiable else f"upload-card-{insight.pattern_type}"),
             className=ticket_class(insight),
-            children=ticket_body(insight),
+            children=ticket_body(insight, data.verifiable),
         )
-        for insight in insights
+        for insight in data.insights
     ]
     return tickets + [scoring_ticket()]
 
@@ -329,11 +416,80 @@ def answer_block(answer: Answer):
     )
 
 
-def period():
-    if df is None:
+def period(data: Optional[Dataset] = None):
+    data = data or CURRENT
+    if data.df is None:
         return ""
-    first, last = df["date"].min(), df["date"].max()
+    first, last = data.df["date"].min(), data.df["date"].max()
     return f"{first.day} {first:%B} to {last.day} {last:%B %Y}"
+
+
+
+# ---------------------------------------------------------------- upload --------------------
+
+MAX_UPLOAD_MB = MAX_UPLOAD_BYTES / 1024 / 1024
+
+
+def upload_card():
+    """Drop your own till export here. Nothing is written to disk."""
+    return html.Section(
+        className="paper upload",
+        children=[
+            html.H3("Try it on your own sales"),
+            html.P(
+                "Drop a CSV export from your till. English or Dutch headers, commas or "
+                "semicolons, comma decimals — it works all of those out and tells you what "
+                "it did. Nothing is uploaded to a database or kept: the file is read in "
+                f"memory and forgotten. Up to {MAX_UPLOAD_MB:.0f} MB.",
+                className="section-note",
+            ),
+            dcc.Upload(
+                id="sales-upload",
+                className="dropzone",
+                accept=".csv,text/csv",
+                multiple=False,
+                max_size=MAX_UPLOAD_BYTES,
+                children=html.Div([
+                    html.B("Choose a CSV"),
+                    html.Span(" or drag it here"),
+                ]),
+            ),
+            html.Div(id="load-report", **{"aria-live": "polite"}),
+            html.Button("Back to the sample data", id="use-sample", className="btn"),
+        ],
+    )
+
+
+def report_panel(report: LoadReport, label: str):
+    """The validation report, printed like everything else on this page."""
+    rows = []
+
+    def line(text, css="report-line"):
+        rows.append(html.P(text, className=css))
+
+    head = "What was read" if report.ok else "That file could not be used"
+    line(report.summary, "finding")
+    if report.how_it_was_read():
+        line(report.how_it_was_read())
+    for error in report.errors:
+        line(error, "report-line bad")
+    for warning in report.warnings:
+        line(warning, "report-line warn")
+
+    if report.columns:
+        rows.append(html.H4("Columns"))
+        rows.append(html.Ul([html.Li(str(note)) for note in report.columns]))
+    if report.ignored:
+        rows.append(html.H4("Ignored"))
+        rows.append(html.Ul([html.Li(name) for name in report.ignored]))
+    if report.drops:
+        rows.append(html.H4(f"Rows dropped ({report.rows_dropped})"))
+        rows.append(html.Ul([html.Li(str(drop)) for drop in report.drops]))
+
+    return html.Div(
+        className=f"report {'ok' if report.ok else 'bad'}",
+        children=[html.H3(head), html.P(label, className="basis")] + rows,
+    )
 
 
 # ---------------------------------------------------------------- page ----------------------
@@ -382,10 +538,15 @@ def page():
 
             html.Main(
                 children=[
-                    till_strip(),
+                    upload_card(),
+
+                    html.Div(id="source-note", className="source-note",
+                             children=f"Showing: {CURRENT.label}"),
+
+                    html.Div(id="till-container", children=till_strip()),
 
                     html.H2("The day, hour by hour", className="section-title"),
-                    chart_ticket(),
+                    html.Div(id="chart-container", children=chart_ticket()),
 
                     html.H2("What the rules found", className="section-title"),
                     html.Div(id="insights-container", className="tickets", children=findings()),
@@ -434,17 +595,81 @@ app.layout = page
 )
 def handle_qa(dip_clicks, trend_clicks, anomaly_clicks):
     """Answer the clicked question from the analysis of the loaded data."""
-    if analysis is None:
+    current = CURRENT.analysis
+    if current is None:
         raise PreventUpdate
 
     answers = {
-        "q-dip": lambda: dip_answer(analysis["afternoon_dip"]),
-        "q-trend": lambda: trend_answer(analysis["trend"]),
-        "q-anomaly": lambda: anomaly_answer(analysis["anomalies"]),
+        "q-dip": lambda: dip_answer(current["afternoon_dip"]),
+        "q-trend": lambda: trend_answer(current["trend"]),
+        "q-anomaly": lambda: anomaly_answer(current["anomalies"]),
     }
     if ctx.triggered_id not in answers:
         raise PreventUpdate
     return answer_block(answers[ctx.triggered_id]())
+
+
+@app.callback(
+    Output("source-note", "children"),
+    Output("till-container", "children"),
+    Output("chart-container", "children"),
+    Output("insights-container", "children"),
+    Output("load-report", "children"),
+    Output("qa-output", "children", allow_duplicate=True),
+    Input("sales-upload", "contents"),
+    Input("use-sample", "n_clicks"),
+    State("sales-upload", "filename"),
+    prevent_initial_call=True,
+)
+def handle_upload(contents, sample_clicks, filename):
+    """Read an uploaded CSV from memory and redraw the page from it.
+
+    Nothing here touches the filesystem: Dash hands over the file as a base64
+    data URL and it is parsed straight out of memory, so data/sample_sales.csv
+    can never be overwritten by an upload.
+
+    The work is in show_sample() and apply_upload() so both can be exercised
+    without a live callback context.
+    """
+    if ctx.triggered_id == "use-sample":
+        return show_sample()
+    if not contents:
+        raise PreventUpdate
+    return apply_upload(contents, filename)
+
+
+def rendered(data: Dataset, report_children=None, note: Optional[str] = None):
+    """The five pieces of page the upload callback replaces, plus a cleared answer."""
+    return (
+        note if note is not None else f"Showing: {data.label}",
+        till_strip(data),
+        chart_ticket(data),
+        findings(data),
+        report_children,
+        None,
+    )
+
+
+def show_sample():
+    """Put the sample data back on the page."""
+    global CURRENT
+    CURRENT = SAMPLE
+    return rendered(SAMPLE)
+
+
+def apply_upload(contents, filename: Optional[str] = None):
+    """Parse an upload and return the page pieces. Never raises on bad input."""
+    global CURRENT
+    frame, report = read_upload(contents, filename)
+    label = filename or "your file"
+    if frame is None:
+        # Whatever was on the page stays there; only the report changes.
+        return rendered(CURRENT, report_panel(report, label))
+    # build_dataset can add to the report, so the panel is drawn after it, not before.
+    CURRENT = build_dataset(frame, label, report)
+    return rendered(
+        CURRENT, report_panel(report, label), f"Showing: {CURRENT.label} — {period(CURRENT)}"
+    )
 
 
 @app.callback(
@@ -473,7 +698,7 @@ def handle_insight_action(verify_clicks, dismiss_clicks):
     pattern_type = button["index"]
     new_status = "verified" if button["type"] == "verify-btn" else "dismissed"
 
-    for insight in insights:
+    for insight in SAMPLE.insights:
         if insight.pattern_type == pattern_type:
             db_id = insight_db_cache.get(pattern_type)
             if db_id:
@@ -481,7 +706,8 @@ def handle_insight_action(verify_clicks, dismiss_clicks):
             insight.status = new_status  # so the buttons give way to the stamp
             break
 
-    return [ticket_body(insight) for insight in insights], [ticket_class(insight) for insight in insights]
+    return ([ticket_body(insight) for insight in SAMPLE.insights],
+            [ticket_class(insight) for insight in SAMPLE.insights])
 
 
 if __name__ == "__main__":
