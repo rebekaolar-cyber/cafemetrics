@@ -244,7 +244,31 @@ def test_detect_anomalies(anomaly_data):
 
 
 def test_detect_anomalies_no_anomalies():
-    """Test when there are no anomalies."""
+    """Test when there are no anomalies.
+
+    The noise is seeded, and has to be. This test asserts the ABSENCE of a rare
+    event on freshly drawn random data, which makes it the one fixture in this
+    file whose outcome sits on a threshold: the scan flags about 0.96% of
+    ordinary days by design, 13 of these 20 days are scanned, so an unseeded
+    version fails whenever any of the 13 draws lands in the tail — measured at
+    13.2% of runs over 3000 trials, against 1-(1-0.0096)^13 = 11.8% predicted
+    from the detector's own documented rate. (The small excess is the overlap
+    between neighbouring windows, which makes consecutive z-scores correlated,
+    so the independent-trials formula is only an approximation.)
+
+    Two things worth recording about that. It is NOT numerical instability: the
+    failure rate is identical at a noise sd of 0.5 and of 5.0, where a
+    floating-point effect would move. And this test used to pass unconditionally
+    for a different reason — the default threshold was unreachable, so
+    anomaly_count was always 0 whatever the data, and the assertion below was
+    vacuous. Making the scan work is what exposed the flake. The assertion is
+    unchanged; days_scanned is now checked too, so it cannot go vacuous again.
+
+    The other unseeded fixtures in this file (dip_data, trend_data,
+    anomaly_data) test large planted effects far from any threshold and do not
+    need seeding: 0 failures in 150 redraws each.
+    """
+    rng = np.random.default_rng(20260401)
     records = []
     for day in range(20):
         date = datetime(2026, 4, 1) + timedelta(days=day)
@@ -256,12 +280,13 @@ def test_detect_anomalies_no_anomalies():
             "product": "Espresso",
             "quantity": 1,
             "unit_price": 2.50,
-            "revenue": 50.0 + np.random.normal(0, 0.5),  # Small variation
+            "revenue": 50.0 + rng.normal(0, 0.5),  # Small variation
         })
     df = pd.DataFrame(records)
     result = detect_anomalies(df)
 
     assert result["anomaly_count"] == 0
+    assert result["days_scanned"] == 13, "quiet days must actually be examined, not skipped"
 
 
 def test_detect_anomalies_custom_threshold():

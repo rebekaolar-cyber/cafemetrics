@@ -201,25 +201,46 @@ def test_unrecognised_columns_are_named_on_the_page(dashboard):
     assert "kassa_id" in text and "medewerker" in text
 
 
-def test_a_file_the_statistics_cannot_cope_with_still_shows_its_totals(dashboard):
-    """An uneven file breaks src/analysis.py; it must not break the page.
+def test_a_file_with_uneven_opening_hours_is_analysed_not_apologised_for(dashboard):
+    """An uneven file must not break the page — and no longer costs it its findings.
 
-    detect_afternoon_dip() runs scipy's paired t-test over the dip hours and the
-    rest, and raises "unequal length arrays" when a day has sales in one of those
-    windows and not the other — which is any café with uneven opening hours. The
-    rule is out of scope here; the guard around it is not.
+    Was test_a_file_the_statistics_cannot_cope_with_still_shows_its_totals. When
+    it was written, detect_afternoon_dip() ran scipy's paired t-test over two
+    series grouped separately over the dip hours and the rest, and raised
+    "unequal length arrays" whenever a day had sales in one window and not the
+    other — which is any café with uneven opening hours. The dashboard's job was
+    to survive that, and this test pinned the guard: totals and chart still
+    drawn, findings replaced by an apology naming the ValueError.
+
+    That crash is fixed. The two series are inner-joined on the date, so days
+    with nothing to pair against are dropped from the comparison and counted in
+    the result instead of derailing it. So the page no longer apologises for this
+    file, it analyses it, and the assertions below say so. What has not changed,
+    and is what this test still guards, is that an uneven file puts no traceback
+    on the page and never costs the reader their totals.
     """
     pieces = upload(dashboard, canonical(rows=60))
     note, till, chart, found, panel, _ = pieces
     text = report_text(pieces)
 
     assert "What was read" in text
-    assert "pattern rules" in text and "could not be run" in text
-    assert "ValueError" in text, "name the failure, do not hide it"
     assert "Traceback" not in text
     assert "£420" in " ".join(texts(till)), "the totals are still the file's own"
-    assert dashboard.CURRENT.analysis is None and dashboard.CURRENT.insights == []
-    assert found, "the 'nothing to report' note and the scoring card still print"
+    assert found, "the findings and the scoring card still print"
+
+    # The rules ran. No apology, and nothing swallowed.
+    assert "could not be run" not in text
+    assert "ValueError" not in text
+    assert dashboard.CURRENT.analysis is not None
+    assert dashboard.CURRENT.insights, "an uneven file now yields real findings"
+
+    # The dip test did not fall over on the unpairable days; it set them aside
+    # and said how many, which is the behaviour that replaced the crash.
+    dip = dashboard.CURRENT.analysis["afternoon_dip"]
+    assert dip["days_in_data"] == 28
+    assert dip["sample_size"] == 15, "only the days with sales on both sides pair up"
+    assert dip["days_excluded"] == 13
+    assert "13 of 28 days" in dip["exclusion_note"]
 
 
 def test_an_upload_without_a_filename_is_still_handled(dashboard):

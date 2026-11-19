@@ -129,12 +129,20 @@ CURRENT = SAMPLE
 def build_dataset(frame, label: str, report: LoadReport) -> Dataset:
     """Run the whole analysis over an uploaded frame.
 
-    The rules in src/analysis.py were written against the sample data and can
-    still fall over on a real export — a café that shuts at two o'clock gives
-    the afternoon-dip t-test two series of different lengths, and scipy raises.
-    A stranger's file must not be able to put a traceback on the page, so the
-    rules are run behind a guard: when they fail the totals and the chart still
-    render and the report says the findings could not be worked out.
+    The guard below is a backstop, not a workaround for a known bug. It was
+    written for one: a café that shut at two o'clock gave the afternoon-dip
+    t-test two series of different lengths and scipy raised "unequal length
+    arrays". That is fixed in src/analysis.py — the two series are inner-joined
+    on the date, and days with nothing to pair against are counted and reported
+    rather than crashing the comparison — and no input has been found since that
+    reaches this except clause, including the uneven files it was written for.
+
+    It stays anyway. This is the one path in the app that runs arbitrary data
+    from a stranger through four statistical modules, and a traceback on the
+    page is a much worse failure than a missing finding. The cost is a few lines;
+    the thing it defends against is the rule nobody has thought of yet. If it
+    ever does trip, the totals and the chart still render and the report says
+    the findings could not be worked out, naming the exception type.
     """
     _, days = get_data_span(frame)
     analysis_result = None
