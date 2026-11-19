@@ -84,7 +84,11 @@ def generate_afternoon_dip_insight(
         "sample_size": dip["sample_size"],
         "consistency_ratio": dip["sample_size"] / calendar_days,
         "effect_size": dip["effect_size"],
-        "p_value": dip["p_value"],
+        # The family-corrected p-value, not the raw one: analyze_all() runs
+        # several tests on one dataset, so the raw value would overstate the
+        # significance this score is paying for. The raw value stays in the
+        # analysis dict and is shown beside it in src/answers.py.
+        "p_value": dip["p_value_corrected"],
     }
     score = compute_confidence(**evidence)
 
@@ -153,7 +157,7 @@ def generate_trend_insight(
         "sample_size": trend["sample_size"],
         "consistency_ratio": 1.0,  # Trend is continuous if detected
         "effect_size": abs(trend["slope_pct"]) / 10,  # Scale percentage to effect-like metric
-        "p_value": trend["p_value"],
+        "p_value": trend["p_value_corrected"],  # see the dip insight for why
     }
     score = compute_confidence(**evidence)
 

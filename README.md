@@ -77,9 +77,14 @@ consistency and significance, but 3.5 of 25 for effect size, because the dip is 
 
 ### 2. Three Core Analyses
 
-- **Afternoon Dip**: Compares revenue in hours 14–16 to daily mean. Returns effect size, sample size, p-value → confidence.
-- **Trend**: Linear regression on daily revenue. Returns slope, p-value, R² → confidence.
+- **Afternoon Dip**: Paired t-test comparing revenue in hours 14–16 to every other open hour. Returns effect size with a bootstrap confidence interval, sample size, p-value → confidence.
+- **Trend**: Linear regression on daily revenue with the day-of-week effect removed first. Returns slope with a bootstrap confidence interval, p-value, partial R² → confidence.
 - **Anomalies**: Z-score detection of outlier days. Returns anomaly count, ratio, mean z-score → confidence.
+
+The dip and trend tests share one dataset, so their p-values are corrected together
+(Benjamini–Hochberg) before anything is reported; the corrected value decides what is reported
+and feeds the confidence score, and the raw value stays on screen beside it. See
+[Why some patterns are not reported](#why-some-patterns-are-not-reported).
 
 ### 3. Rule-Based Insights, Not LLM
 
@@ -120,6 +125,46 @@ When the rules find nothing, the answer says so and shows the numbers. On the sa
 the three answers are "nothing found".
 
 No free-form text box, no LLM API calls.
+
+## Why some patterns are not reported
+
+A dashboard that only ever finds things is not measuring anything. On the shipped sample data
+(92 days) the rules report **one** finding out of three, and the reasons are worth reading —
+they are the same reasons the numbers can be trusted when something *is* reported.
+
+**The trend that isn't: revenue looks like it's rising, and it is not reported.**
+Daily revenue drifts up by about £1.91 a day. But the range of drifts consistent with this data
+runs from **−£0.03 to £3.85 a day** (95% confidence) — it includes zero, so "no change at all"
+is still on the table. The formal test agrees: p = 0.054, just the wrong side of the 0.05 line
+the project reports at. Two steps got it there, and both are documented in `src/analysis.py`:
+
+- *The weekly pattern is removed first.* Saturdays take far more than Tuesdays, and a 92-day
+  window never holds equal numbers of each weekday. A plain line fitted through daily revenue
+  can therefore slope purely because of which weekdays the window begins and ends on. Taking the
+  day-of-week effect out first moved this p-value from **0.066 to 0.054** — the weekly rhythm was
+  slightly flattering the trend, not creating it.
+- *Three tests on one dataset means three chances to get lucky.* Run enough tests and one comes
+  back "significant" by accident. The Benjamini–Hochberg correction raises each p-value to
+  account for the others in the family, and the dashboard shows the raw and the corrected value
+  side by side.
+
+So the honest answer is: revenue may well be rising, but 92 days is not enough to tell it apart
+from an ordinary good run. The dashboard says exactly that, with the numbers.
+
+**The dip that is reported, but only at 79 out of 100.**
+Afternoons from 14:00 to 17:00 really are quieter: £78 in an average hour against £85 across the
+day, and the test is about as certain as tests get (p < 0.001 even after correction). What holds
+the score down is that **8% is a small difference**. The effect size is 0.18 (95% confidence
+0.12 to 0.23), which on the conventional scale is small — so that part of the score earns
+**3.5 points out of 25**, and the finding lands in the MEDIUM band rather than HIGH. Certain
+that it happens; not a big enough gap to justify a drastic change.
+
+**No unusual days.** None of the 92 days sits more than 2.5 standard deviations from the week
+running up to it. The sample data has no closures, heatwaves or festivals in it, so this is the
+expected answer rather than a surprising one.
+
+**The one number no statistics can supply.** A reported dip says the afternoons *are* quieter.
+It does not say why, and nothing in this repo pretends otherwise.
 
 ## Installation & Setup
 
@@ -224,17 +269,30 @@ basis = confidence_basis(30, 0.90, 92)
 Three detection functions, each returning raw stats for confidence scoring:
 
 ```python
-from src.analysis import detect_afternoon_dip, detect_trend, detect_anomalies
+from src.analysis import analyze_all, detect_afternoon_dip, detect_trend, detect_anomalies
 
 dip = detect_afternoon_dip(df)
-# Returns: sample_size, effect_size, p_value, dip_avg_revenue, overall_avg_revenue
+# Returns: sample_size, effect_size, effect_size_ci, p_value, p_value_corrected,
+#          family_size, dip_avg_revenue, overall_avg_revenue
 
 trend = detect_trend(df)
-# Returns: slope, p_value, r_squared, slope_pct
+# Returns: slope, slope_ci, slope_pct, p_value, p_value_corrected, family_size,
+#          r_squared, and the pre-adjustment fit as *_unadjusted
 
 anomalies = detect_anomalies(df, z_threshold=2.5)
 # Returns: anomaly_count, anomaly_ratio, anomalous_dates, mean_z_score
+
+# analyze_all() runs all three and corrects the family's p-values together.
+# A detector called on its own is a family of one: p_value_corrected == p_value.
+analysis = analyze_all(df)
 ```
+
+### `src/statistics_support.py`
+
+The shared statistical machinery, kept out of `analysis.py` so each piece is testable alone:
+Benjamini–Hochberg correction, a seeded percentile bootstrap
+(seed `20260401`, 2000 resamples, 95% intervals — change the seed and every published
+interval changes), and the weekday-adjusted trend fit.
 
 ### `src/insights.py`
 

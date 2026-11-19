@@ -9,10 +9,11 @@ import inspect
 from typing import Any, Dict, List, NamedTuple
 
 from src.analysis import detect_anomalies
+from src.statistics_support import FAMILY_ALPHA, format_interval
 
 # The cut-offs the rules use, read from where they are defined so the text can't drift.
 Z_THRESHOLD: float = inspect.signature(detect_anomalies).parameters["z_threshold"].default
-P_CUTOFF = 0.05
+P_CUTOFF = FAMILY_ALPHA
 
 
 class Answer(NamedTuple):
@@ -26,6 +27,32 @@ class Answer(NamedTuple):
 def format_p(p_value: float) -> str:
     """A p-value as it is usually written: 'p < 0.001' or 'p = 0.066'."""
     return "p < 0.001" if p_value < 0.001 else f"p = {p_value:.3f}"
+
+
+def format_corrected_p(result: Dict[str, Any]) -> str:
+    """
+    The raw p-value and the family-corrected one, side by side.
+
+    The corrected value is the one the rules act on, so it is named first; the
+    raw one is kept visible because it is the number the test itself produced
+    and the number earlier versions of this app displayed.
+
+    Args:
+        result: A detector result holding 'p_value', 'p_value_corrected' and
+            'family_size'.
+
+    Returns:
+        E.g. "p < 0.001 after correcting for the 2 tests run (raw p < 0.001)",
+        or just the raw p-value when only one test was run.
+    """
+    raw, corrected = result["p_value"], result["p_value_corrected"]
+    family = result.get("family_size", 1)
+    if family <= 1:
+        return format_p(raw)
+    return (
+        f"{format_p(corrected)} after correcting for the {family} tests run "
+        f"(raw {format_p(raw)})"
+    )
 
 
 def effect_word(effect_size: float) -> str:
@@ -54,8 +81,13 @@ def dip_answer(dip: Dict[str, Any]) -> Answer:
     dip_avg, overall = dip["dip_avg_revenue"], dip["overall_avg_revenue"]
     gap = abs(overall - dip_avg) / overall * 100 if overall else 0.0
     evidence = (
-        f"Compared on {dip['sample_size']} days with a paired t-test, {format_p(dip['p_value'])}. "
-        f"Effect size {dip['effect_size']:.2f}, which counts as {effect_word(dip['effect_size'])}."
+        f"Compared on {dip['sample_size']} days with a paired t-test, "
+        f"{format_corrected_p(dip)}. "
+        f"Effect size {dip['effect_size']:.2f} "
+        f"({format_interval(dip['effect_size_ci'])}), "
+        f"which counts as {effect_word(dip['effect_size'])}. "
+        f"The window is compared against every other hour the café is open, "
+        f"quiet opening and closing hours included."
     )
     if not dip["detected"]:
         return Answer(
@@ -86,8 +118,12 @@ def trend_answer(trend: Dict[str, Any]) -> Answer:
     per_day = f"£{abs(trend['slope']):,.2f} a day"
     share = f"{abs(trend['slope_pct']):.2f}% of an average day"
     evidence = (
-        f"Straight-line fit over {days} days, {format_p(trend['p_value'])}. "
-        f"The line explains {trend['r_squared']:.0%} of the day-to-day variation."
+        f"Straight-line fit over {days} days with the day-of-week pattern taken out first, "
+        f"{format_corrected_p(trend)}. "
+        f"Slope {format_interval(trend['slope_ci'], unit='£')} a day. "
+        f"The line explains {trend['r_squared']:.0%} of the variation left once the weekly "
+        f"pattern is accounted for. Without taking the weekly pattern out the same fit gives "
+        f"{format_p(trend['p_value_unadjusted'])}."
     )
     if not trend["detected"]:
         return Answer(
